@@ -6,6 +6,20 @@
 # ftp and IIS service on windows every 10 minutes via Task Scheduler."
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
+# Claude Sonnet 4.6 Terminal
+
+#Create a CCDC_Linux_ATD_ComeATmeBro.sh in
+# C:\Repos\CCDC_Red_Team_Tools\CCDC_Red_Team_Tools\WORK_IN_PROGRESS_setupscripts.
+#  I need it to test my blue team by installing and running ATD (also enabling)
+#   and it will systemctl stop http, dovecot, and
+#    run sudo apt update every 10 minutes
+# I want you to also create a 
+# CCDC_Windows_TASKSCHEDULER_TaskMaster.ps1
+# that does a similar thing that stop the dns
+#  ftp and IIS service on windows. 
+# After you are done creating these, perform a code review and ensure compatability with windows server 2019+ and linux centos ubuntu and fedora base ssystems. 
+
+
 # THIS SCRIPT REGISTERS SCHEDULED TASKS THAT REPEATEDLY STOP SERVICES
 
 #Requires -RunAsAdministrator
