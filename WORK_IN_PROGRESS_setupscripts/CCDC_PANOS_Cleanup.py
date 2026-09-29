@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(__file__))
 from panos_lib import PanosAPI, DEVICE, VSYS
-from CCDC_PANOS_Setup_DirtyFirewall import (
+from CCDC_Red_Team_Tools.WORK_IN_PROGRESS_setupscripts.CCDC_PANOS_Setup_DirtyFirewall import (
     STATE_FILE, ROGUE_ADMIN, ROGUE_SYSLOG_PROFILE, ROGUE_LOG_FWD,
     ROGUE_URL_PROFILE, ROGUE_RULE, ROGUE_AUTH_PROFILE,
 )

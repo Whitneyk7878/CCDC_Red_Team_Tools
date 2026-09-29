@@ -15,8 +15,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from panos_lib import PanosAPI
-from CCDC_PANOS_Setup_DirtyFirewall import run_setup
-from CCDC_PANOS_Cleanup import run_cleanup
+from CCDC_Red_Team_Tools.WORK_IN_PROGRESS_setupscripts.CCDC_PANOS_Setup_DirtyFirewall import run_setup
+from CCDC_Red_Team_Tools.WORK_IN_PROGRESS_setupscripts.CCDC_PANOS_Cleanup import run_cleanup
 
 
 BANNER = """
