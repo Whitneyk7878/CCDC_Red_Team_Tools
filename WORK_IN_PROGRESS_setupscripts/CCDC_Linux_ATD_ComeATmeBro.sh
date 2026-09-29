@@ -74,16 +74,22 @@ elif [[ "$PKG_MGR" == "yum" ]]; then
     yum install -y at 2>/dev/null || true
 fi
 
-# atd may not be managed by systemd on all distros (SysV init fallback)
+# atd may not be managed by systemd on all distros (SysV init fallback).
+# NOTE: On CentOS 7, 'service atd status' exits 0 even when atd is stopped,
+#       so we always verify with pgrep rather than trusting the exit code.
 if systemctl list-units --type=service 2>/dev/null | grep -q 'atd'; then
     systemctl enable atd 2>/dev/null || true
     systemctl start  atd 2>/dev/null || true
     success "atd service enabled and started via systemctl."
-elif service atd status &>/dev/null || service atd start &>/dev/null; then
-    success "atd service started via SysV init."
 else
-    warn "Could not start atd via systemctl or service — attempting direct daemon start."
-    atd 2>/dev/null || true
+    service atd start 2>/dev/null || true
+    sleep 1
+    if pgrep -x atd &>/dev/null; then
+        success "atd service started via SysV init."
+    else
+        warn "Could not start atd via service — attempting direct daemon start."
+        atd 2>/dev/null || true
+    fi
 fi
 
 # Give atd a moment to initialise
