@@ -1,0 +1,9 @@
+# Shared variables for CCDC 2026-09-03 practice session
+
+c2_server: "172.31.40.6"
+c2_port: 8007
+scripts_dir: "/tmp/ccdc_scripts"
+
+implant_beacon: "IMPLANT_BEACON_LINUX_MTLS_8888"
+implant_session_persist: "IMPLANT_SESSION_LINUX_HTTP_8010"
+implant_session_bg: "IMPLANT_SESSION_LINUX_HTTP_8011"

