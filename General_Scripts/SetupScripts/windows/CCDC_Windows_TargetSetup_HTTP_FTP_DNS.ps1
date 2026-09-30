@@ -1,15 +1,19 @@
-# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# CCDC Windows Target Setup  -  IIS (HTTP), FTP, DNS
-# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# Provisions a Windows Server 2022 standalone (workgroup) machine as a
-# scoreable CCDC competition target running:
-#   * IIS HTTP   -  Default Web Site on port 80
-#   * IIS FTP    -  Anonymous read, port 21, passive 50000-50100
-#   * DNS Server  -  Primary forward zone for ccdc.local
+# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+# CCDC Windows Target Setup  -  AD DS, IIS (HTTP), FTP, DNS
+# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+# Provisions a Windows Server 2019 standalone machine as a scoreable CCDC
+# competition target running:
+#   * AD DS  -  new forest/domain  ccdc.local  (DC + DNS promotion)
+#   * IIS HTTP  -  Default Web Site on port 80
+#   * IIS FTP   -  Anonymous read, port 21, passive 50000-50100
+#   * DNS Server  -  AD-integrated forward zone for ccdc.local
 #
-# Run as Administrator before competition start.
-# Safe to re-run  -  idempotent checks throughout.
-# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+# Run as Administrator (PowerShell).  Safe to re-run -- idempotent throughout.
+# Requires three runs because two reboots are needed:
+#   Run 1  ->  installs features           ->  REBOOT
+#   Run 2  ->  promotes to Domain Controller ->  REBOOT (automatic)
+#   Run 3  ->  configures DNS / IIS / FTP  ->  DONE
+# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
 #Requires -RunAsAdministrator
 
@@ -25,12 +29,15 @@ function Write-Section { param($m) Write-Host "`n==[ $m ]==" -ForegroundColor Ma
 
 Write-Host ""
 Write-Warn "================================================================"
-Write-Warn " CCDC Windows Target Setup  -  HTTP / FTP / DNS"
+Write-Warn " CCDC Windows Target Setup  -  AD DS / HTTP / FTP / DNS"
 Write-Warn "================================================================"
 Write-Host ""
 
 # -- Configuration -------------------------------------------------------------
 $DnsZoneName   = "ccdc.local"
+$DomainFQDN    = $DnsZoneName      # AD domain matches DNS zone
+$DomainNetBIOS = "CCDC"
+$DsrmPassword  = "CCDC@dmin1!"    # Directory Services Restore Mode password
 $FtpSiteName   = "CCDC-FTP"
 $FtpRoot       = "C:\inetpub\ftproot"
 $FtpPassiveLow = 50000
@@ -43,11 +50,10 @@ $WebSiteName   = "Default Web Site"
 # -----------------------------------------------------------------------------
 Write-Section "PRE-FLIGHT CHECK"
 
-# Hostname
 $HostName = [System.Net.Dns]::GetHostName()
 Write-Info "Hostname : $HostName"
 
-# Primary IPv4  -  follow the default route, fall back to first non-loopback
+# Primary IPv4 - follow the default route, fall back to first non-loopback
 try {
     $defaultRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' |
                     Sort-Object { $_.RouteMetric + $_.InterfaceMetric } |
@@ -65,18 +71,20 @@ if (-not $HostIP) {
     exit 1
 }
 Write-Info "Primary IP : $HostIP"
-Write-Info "DNS zone   : $DnsZoneName"
+Write-Info "Domain     : $DomainFQDN"
+Write-Info "NetBIOS    : $DomainNetBIOS"
 Write-Host ""
 
-# Show all IPv4 addresses so operator can sanity-check
 Write-Info "All IPv4 addresses on this machine:"
 Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^127\.' } |
-    ForEach-Object { Write-Host "    $($_.IPAddress)  (adapter: $((Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue).Name))" }
+    ForEach-Object {
+        $adapterName = (Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue).Name
+        Write-Host "    $($_.IPAddress)  (adapter: $adapterName)"
+    }
 Write-Host ""
 
-# Show relevant feature state before we change anything
 Write-Info "Current Windows feature state (relevant roles):"
-$checkFeatures = @('Web-Server','Web-Ftp-Server','DNS','Web-Mgmt-Tools','Web-ASP','Web-ISAPI-Ext')
+$checkFeatures = @('AD-Domain-Services','DNS','Web-Server','Web-Ftp-Server','Web-Mgmt-Tools','RSAT-AD-PowerShell')
 foreach ($f in $checkFeatures) {
     $feat = Get-WindowsFeature -Name $f -ErrorAction SilentlyContinue
     if ($feat) {
@@ -87,9 +95,8 @@ foreach ($f in $checkFeatures) {
 }
 Write-Host ""
 
-# Show services that should be running after setup
 Write-Info "Relevant services (current state):"
-foreach ($svc in @('W3SVC','MSFTPSVC','DNS')) {
+foreach ($svc in @('NTDS','DNS','W3SVC','MSFTPSVC')) {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     if ($s) {
         $color = if ($s.Status -eq 'Running') { 'Green' } else { 'Yellow' }
@@ -100,39 +107,25 @@ foreach ($svc in @('W3SVC','MSFTPSVC','DNS')) {
 }
 Write-Host ""
 
-# Show relevant open firewall ports
-Write-Info "Inbound firewall rules for ports 21, 53, 80, $FtpPassiveLow-$FtpPassiveHigh :"
-$relevantRules = Get-NetFirewallRule -Direction Inbound -ErrorAction SilentlyContinue |
-    Where-Object { $_.Enabled -eq 'True' } |
-    ForEach-Object {
-        $portFilter = $_ | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
-        [PSCustomObject]@{ Name = $_.DisplayName; Port = $portFilter.LocalPort; Action = $_.Action }
-    } |
-    Where-Object { $_.Port -match '21|53|80|50000' }
-
-if ($relevantRules) {
-    $relevantRules | ForEach-Object { Write-Host "    [$($_.Action)] $($_.Name)  (port $($_.Port))" }
-} else {
-    Write-Warn "    No matching inbound rules found."
-}
-Write-Host ""
-
 # -----------------------------------------------------------------------------
 # FEATURE INSTALLATION
 # -----------------------------------------------------------------------------
 Write-Section "INSTALL WINDOWS FEATURES"
 
 $featuresToInstall = @(
-    'Web-Server',           # IIS core
-    'Web-Common-Http',      # Default doc, directory browsing, static content
+    'AD-Domain-Services',       # Active Directory Domain Services role
+    'RSAT-AD-PowerShell',       # AD PowerShell module (Get-ADUser, New-ADUser, etc.)
+    'GPMC',                     # Group Policy Management Console
+    'DNS',                      # DNS Server role
+    'Web-Server',               # IIS core
+    'Web-Common-Http',
     'Web-Default-Doc',
     'Web-Static-Content',
-    'Web-Ftp-Server',       # IIS FTP service
+    'Web-Ftp-Server',           # IIS FTP service
     'Web-Ftp-Service',
-    'Web-Mgmt-Tools',       # IIS management console + cmdlets
+    'Web-Mgmt-Tools',           # IIS management console + cmdlets
     'Web-Mgmt-Console',
-    'Web-Scripting-Tools',
-    'DNS'                   # DNS Server role
+    'Web-Scripting-Tools'
 )
 
 Write-Info "Installing roles and features (this may take a few minutes)..."
@@ -141,7 +134,7 @@ try {
     if ($installResult.Success) {
         Write-Success "Features installed."
         if ($installResult.RestartNeeded -eq 'Yes') {
-            Write-Warn "A RESTART IS REQUIRED before services will start. Reboot and re-run this script."
+            Write-Warn "A RESTART IS REQUIRED. Reboot and re-run this script (Run 2 of 3)."
             exit 0
         }
     } else {
@@ -153,7 +146,50 @@ try {
     exit 1
 }
 
-# Load the WebAdministration module now that IIS is installed
+# -----------------------------------------------------------------------------
+# ACTIVE DIRECTORY DOMAIN SERVICES
+# -----------------------------------------------------------------------------
+Write-Section "ACTIVE DIRECTORY DOMAIN SERVICES"
+
+$ntdsSvc = Get-Service -Name 'NTDS' -ErrorAction SilentlyContinue
+if ($ntdsSvc -and $ntdsSvc.Status -eq 'Running') {
+    Write-Success "This server is already a Domain Controller for $DomainFQDN -- skipping promotion."
+} else {
+    Write-Info "Promoting this server to Domain Controller for forest: $DomainFQDN"
+    Write-Info "NetBIOS name : $DomainNetBIOS"
+    Write-Info "DSRM password: $DsrmPassword"
+    Write-Warn "The server will reboot AUTOMATICALLY after promotion."
+    Write-Warn "Re-run this script after the reboot to complete IIS / FTP / DNS setup (Run 3 of 3)."
+    Write-Host ""
+
+    try {
+        Import-Module ADDSDeployment -ErrorAction Stop
+    } catch {
+        Write-Err "Could not load ADDSDeployment module: $_"
+        Write-Err "Ensure the AD-Domain-Services feature is installed, then reboot and re-run."
+        exit 1
+    }
+
+    $securePass = ConvertTo-SecureString $DsrmPassword -AsPlainText -Force
+
+    Install-ADDSForest `
+        -DomainName                    $DomainFQDN `
+        -DomainNetbiosName             $DomainNetBIOS `
+        -DomainMode                    WinThreshold `
+        -ForestMode                    WinThreshold `
+        -DatabasePath                  'C:\Windows\NTDS' `
+        -SysvolPath                    'C:\Windows\SYSVOL' `
+        -LogPath                       'C:\Windows\NTDS' `
+        -InstallDns:$true `
+        -CreateDnsDelegation:$false `
+        -SafeModeAdministratorPassword $securePass `
+        -Force:$true
+
+    # Not reached -- Install-ADDSForest triggers an automatic reboot.
+    exit 0
+}
+
+# Load the WebAdministration module now that IIS is confirmed installed
 try {
     Import-Module WebAdministration -ErrorAction Stop
     Write-Success "WebAdministration module loaded."
@@ -168,22 +204,28 @@ try {
 # -----------------------------------------------------------------------------
 Write-Section "DNS SERVER"
 
-# Ensure the DNS service is running
 Write-Info "Starting DNS service..."
 Set-Service -Name DNS -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service -Name DNS -ErrorAction SilentlyContinue
 $dnsSvc = Get-Service -Name DNS -ErrorAction SilentlyContinue
-if ($dnsSvc.Status -eq 'Running') {
+if ($dnsSvc -and $dnsSvc.Status -eq 'Running') {
     Write-Success "DNS service running."
 } else {
     Write-Err "DNS service failed to start. Check Event Viewer > System."
     exit 1
 }
 
-# Create the primary forward lookup zone (file-backed, no AD DS required)
+# After AD promotion, the zone already exists as AD-integrated.
+# If not, create it as file-backed (standalone/no-AD fallback).
 $existingZone = Get-DnsServerZone -Name $DnsZoneName -ErrorAction SilentlyContinue
 if ($existingZone) {
-    Write-Warn "Zone '$DnsZoneName' already exists  -  skipping creation."
+    $zoneType = $existingZone.ZoneType
+    $adIntegrated = $existingZone.IsAutoCreated -or $existingZone.IsDsIntegrated
+    if ($adIntegrated) {
+        Write-Success "Zone '$DnsZoneName' exists as AD-integrated -- no changes needed."
+    } else {
+        Write-Warn "Zone '$DnsZoneName' exists ($zoneType) -- skipping creation."
+    }
 } else {
     Write-Info "Creating primary zone: $DnsZoneName ..."
     Add-DnsServerPrimaryZone `
@@ -191,24 +233,34 @@ if ($existingZone) {
         -ZoneFile      "$DnsZoneName.dns" `
         -DynamicUpdate None `
         -ErrorAction   Stop
-    Write-Success "Zone created: $DnsZoneName (file-backed, no dynamic update)"
+    Write-Success "Zone created: $DnsZoneName (file-backed)"
 }
 
-# Create/update A record for this server's own hostname
-Write-Info "Adding A record: $HostName.$DnsZoneName -> $HostIP ..."
+# Ensure A record for this server's hostname exists
+Write-Info "Ensuring A record: $HostName.$DnsZoneName -> $HostIP ..."
 $existingA = Get-DnsServerResourceRecord -ZoneName $DnsZoneName -Name $HostName -RRType A -ErrorAction SilentlyContinue
 if ($existingA) {
-    Write-Warn "  A record '$HostName' already exists  -  removing and recreating."
-    Remove-DnsServerResourceRecord -ZoneName $DnsZoneName -Name $HostName -RRType A -Force -ErrorAction SilentlyContinue
+    $currentIP = $existingA.RecordData.IPv4Address.ToString()
+    if ($currentIP -eq $HostIP) {
+        Write-Success "  A record already correct: $HostName.$DnsZoneName = $HostIP"
+    } else {
+        Write-Warn "  A record has wrong IP ($currentIP) -- removing and recreating."
+        Remove-DnsServerResourceRecord -ZoneName $DnsZoneName -Name $HostName -RRType A -Force -ErrorAction SilentlyContinue
+        Add-DnsServerResourceRecordA -ZoneName $DnsZoneName -Name $HostName -IPv4Address $HostIP -ErrorAction Stop
+        Write-Success "  A record updated: $HostName.$DnsZoneName = $HostIP"
+    }
+} else {
+    Add-DnsServerResourceRecordA -ZoneName $DnsZoneName -Name $HostName -IPv4Address $HostIP -ErrorAction Stop
+    Write-Success "  A record added: $HostName.$DnsZoneName = $HostIP"
 }
-Add-DnsServerResourceRecordA -ZoneName $DnsZoneName -Name $HostName -IPv4Address $HostIP -ErrorAction Stop
-Write-Success "  A record: $HostName.$DnsZoneName = $HostIP"
 
 # Zone apex A record (@)
 $existingApex = Get-DnsServerResourceRecord -ZoneName $DnsZoneName -Name "@" -RRType A -ErrorAction SilentlyContinue
 if (-not $existingApex) {
     Add-DnsServerResourceRecordA -ZoneName $DnsZoneName -Name "@" -IPv4Address $HostIP -ErrorAction SilentlyContinue
     Write-Success "  A record: $DnsZoneName (apex) = $HostIP"
+} else {
+    Write-Success "  Apex A record already exists."
 }
 
 # DNS firewall rules
@@ -233,18 +285,21 @@ foreach ($rule in @(
 # -----------------------------------------------------------------------------
 Write-Section "IIS HTTP (port 80)"
 
-# Ensure W3SVC is running
 Set-Service -Name W3SVC -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service -Name W3SVC -ErrorAction SilentlyContinue
-Write-Success "W3SVC started."
+$w3Svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+if ($w3Svc -and $w3Svc.Status -eq 'Running') {
+    Write-Success "W3SVC (IIS) service running."
+} else {
+    Write-Err "W3SVC failed to start. Check Event Viewer > Application."
+    exit 1
+}
 
-# Create web root if missing
 if (-not (Test-Path $WebRoot)) {
     New-Item -ItemType Directory -Path $WebRoot -Force | Out-Null
     Write-Success "Web root created: $WebRoot"
 }
 
-# Write placeholder index page
 $IndexHtml = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -266,6 +321,7 @@ $IndexHtml = @"
     <h1>CCDC Web Server</h1>
     <p>Host: $HostName</p>
     <p>Address: $HostIP</p>
+    <p>Domain: $DomainFQDN</p>
     <span class="badge">HTTP service is running</span>
   </div>
 </body>
@@ -274,14 +330,12 @@ $IndexHtml = @"
 $IndexHtml | Set-Content -Path "$WebRoot\index.html" -Encoding UTF8 -Force
 Write-Success "index.html written: $WebRoot\index.html"
 
-# Ensure Default Web Site exists and is bound to port 80
 $site = Get-Website -Name $WebSiteName -ErrorAction SilentlyContinue
 if (-not $site) {
     Write-Info "Creating '$WebSiteName' on port 80..."
     New-Website -Name $WebSiteName -PhysicalPath $WebRoot -Port 80 -IPAddress "*" -Force | Out-Null
     Write-Success "Site created."
 } else {
-    # Make sure it's pointed at our web root and has a port-80 binding
     Set-ItemProperty "IIS:\Sites\$WebSiteName" -Name physicalPath -Value $WebRoot
     $hasPort80 = ($site | Get-WebBinding | Where-Object { $_.bindingInformation -match ':80:' })
     if (-not $hasPort80) {
@@ -297,7 +351,6 @@ Start-Website -Name $WebSiteName -ErrorAction SilentlyContinue
 $siteState = (Get-Website -Name $WebSiteName).State
 Write-Success "Site state: $siteState"
 
-# HTTP firewall rule
 Remove-NetFirewallRule -DisplayName "HTTP 80 (inbound)" -ErrorAction SilentlyContinue
 New-NetFirewallRule `
     -DisplayName "HTTP 80 (inbound)" `
@@ -313,7 +366,6 @@ Write-Success "Firewall: HTTP port 80 open."
 # -----------------------------------------------------------------------------
 Write-Section "IIS FTP (port 21, anonymous)"
 
-# Ensure MSFTPSVC (IIS FTP) is running
 Set-Service -Name MSFTPSVC -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service -Name MSFTPSVC -ErrorAction SilentlyContinue
 $ftpSvc = Get-Service -Name MSFTPSVC -ErrorAction SilentlyContinue
@@ -324,19 +376,17 @@ if ($ftpSvc -and $ftpSvc.Status -eq 'Running') {
     exit 1
 }
 
-# Create FTP root
 if (-not (Test-Path $FtpRoot)) {
     New-Item -ItemType Directory -Path $FtpRoot -Force | Out-Null
     Write-Success "FTP root created: $FtpRoot"
 }
 
-# Drop a README so blue team can verify the service is live
 $ReadmeContent = @"
 CCDC Competition Target  -  FTP Service
 ======================================
 Host    : $HostName
 Address : $HostIP
-Zone    : $DnsZoneName
+Domain  : $DomainFQDN
 
 This FTP site is a scored competition service.
 Anonymous read access is enabled.
@@ -344,10 +394,8 @@ Anonymous read access is enabled.
 $ReadmeContent | Set-Content -Path "$FtpRoot\README.txt" -Encoding UTF8 -Force
 Write-Success "README.txt written: $FtpRoot\README.txt"
 
-# Remove existing FTP site if present so we can create cleanly
-$existingFtp = Get-WebSite -Name $FtpSiteName -ErrorAction SilentlyContinue
+$existingFtp = Get-Website -Name $FtpSiteName -ErrorAction SilentlyContinue
 if (-not $existingFtp) {
-    # Get-WebSite doesn't filter FTP sites by name cleanly  -  check the IIS: drive directly
     $existingFtp = Get-Item "IIS:\Sites\$FtpSiteName" -ErrorAction SilentlyContinue
 }
 if ($existingFtp) {
@@ -359,7 +407,6 @@ Write-Info "Creating FTP site: $FtpSiteName on port 21..."
 New-WebFtpSite -Name $FtpSiteName -Port 21 -PhysicalPath $FtpRoot -Force | Out-Null
 Write-Success "FTP site created."
 
-# Disable basic authentication (default is enabled  -  we only want anonymous)
 Set-WebConfigurationProperty `
     -Filter   "system.ftpServer/security/authentication/basicAuthentication" `
     -PSPath   "IIS:" `
@@ -367,7 +414,6 @@ Set-WebConfigurationProperty `
     -Name     "enabled" `
     -Value    $false
 
-# Enable anonymous authentication
 Set-WebConfigurationProperty `
     -Filter   "system.ftpServer/security/authentication/anonymousAuthentication" `
     -PSPath   "IIS:" `
@@ -377,16 +423,14 @@ Set-WebConfigurationProperty `
 
 Write-Success "FTP auth: anonymous ON, basic OFF."
 
-# Add authorization rule: allow all users (*) read access
 Add-WebConfiguration `
-    -Filter  "system.ftpServer/security/authorization" `
-    -PSPath  "IIS:" `
+    -Filter   "system.ftpServer/security/authorization" `
+    -PSPath   "IIS:" `
     -Location $FtpSiteName `
-    -Value   @{ accessType = "Allow"; users = "*"; permissions = "Read" } `
+    -Value    @{ accessType = "Allow"; users = "*"; permissions = "Read" } `
     -ErrorAction SilentlyContinue
 Write-Success "FTP authorization: Allow * Read."
 
-# Configure passive port range (firewall-friendly, avoids port conflicts)
 Set-WebConfigurationProperty `
     -Filter "system.ftpServer/firewallSupport" `
     -PSPath "IIS:" `
@@ -399,7 +443,6 @@ Set-WebConfigurationProperty `
     -Value  $FtpPassiveHigh
 Write-Success "FTP passive range: $FtpPassiveLow-$FtpPassiveHigh"
 
-# Set external IP for passive mode responses so clients get a routable address
 Set-WebConfigurationProperty `
     -Filter "system.ftpServer/firewallSupport" `
     -PSPath "IIS:" `
@@ -410,10 +453,9 @@ Write-Success "FTP external IP (PASV response): $HostIP"
 Set-ItemProperty "IIS:\Sites\$FtpSiteName" -Name serverAutoStart -Value $true
 Start-Website -Name $FtpSiteName -ErrorAction SilentlyContinue
 
-# FTP firewall rules
 foreach ($rule in @(
-    @{ Name="FTP Control TCP 21 (inbound)";          Port=21;                       Proto="TCP" },
-    @{ Name="FTP Passive Data TCP $FtpPassiveLow-$FtpPassiveHigh (inbound)"; Port="$FtpPassiveLow-$FtpPassiveHigh"; Proto="TCP" }
+    @{ Name="FTP Control TCP 21 (inbound)";                                    Port=21;                         Proto="TCP" },
+    @{ Name="FTP Passive Data TCP $FtpPassiveLow-$FtpPassiveHigh (inbound)";  Port="$FtpPassiveLow-$FtpPassiveHigh"; Proto="TCP" }
 )) {
     Remove-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
     New-NetFirewallRule `
@@ -431,14 +473,22 @@ foreach ($rule in @(
 # -----------------------------------------------------------------------------
 Write-Section "VERIFICATION"
 
-# Services
-foreach ($svc in @('W3SVC','MSFTPSVC','DNS')) {
+foreach ($svc in @('NTDS','DNS','W3SVC','MSFTPSVC')) {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     $status = if ($s) { $s.Status } else { 'NOT FOUND' }
     $color  = if ($s -and $s.Status -eq 'Running') { 'Green' } else { 'Red' }
     Write-Host "  $($status.ToString().PadRight(10)) $svc" -ForegroundColor $color
 }
 Write-Host ""
+
+# AD check
+Write-Info "AD domain check..."
+try {
+    $adDomain = Get-ADDomain -ErrorAction Stop
+    Write-Success "Domain: $($adDomain.DNSRoot)  DC: $HostName"
+} catch {
+    Write-Warn "AD domain query failed: $_ (module may not be loaded yet)"
+}
 
 # HTTP local check
 Write-Info "HTTP local check..."
@@ -449,7 +499,7 @@ try {
     Write-Warn "Could not reach http://localhost : $_ (service may still be settling)"
 }
 
-# FTP local check  -  just a TCP connect to port 21
+# FTP port check
 Write-Info "FTP port check..."
 try {
     $tcp = New-Object System.Net.Sockets.TcpClient
@@ -460,13 +510,13 @@ try {
     Write-Warn "Could not connect to FTP port 21: $_"
 }
 
-# DNS local check
+# DNS resolution check
 Write-Info "DNS resolution check (querying $DnsZoneName from localhost)..."
 try {
-    $result = Resolve-DnsName -Name $DnsZoneName -Server 127.0.0.1 -Type A -ErrorAction Stop
-    Write-Success "DNS resolved: $DnsZoneName -> $($result.IPAddress)"
+    $dnsResult = Resolve-DnsName -Name $DnsZoneName -Server 127.0.0.1 -Type A -ErrorAction Stop
+    Write-Success "DNS resolved: $DnsZoneName -> $($dnsResult.IPAddress)"
 } catch {
-    Write-Warn "DNS query failed: $_ (may need a moment to load the zone)"
+    Write-Warn "DNS query failed: $_ (zone may need a moment to load)"
 }
 
 # -----------------------------------------------------------------------------
@@ -475,6 +525,12 @@ try {
 Write-Section "SETUP COMPLETE"
 Write-Host ""
 Write-Host "  Machine    : $HostName  ($HostIP)" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Active Directory" -ForegroundColor Yellow
+Write-Host "    Domain   : $DomainFQDN"
+Write-Host "    NetBIOS  : $DomainNetBIOS"
+Write-Host "    DC       : $HostName"
+Write-Host "    DSRM pw  : $DsrmPassword"
 Write-Host ""
 Write-Host "  HTTP" -ForegroundColor Yellow
 Write-Host "    URL      : http://$HostIP"
@@ -488,10 +544,11 @@ Write-Host "    Auth     : anonymous (read only)"
 Write-Host "    Passive  : $FtpPassiveLow - $FtpPassiveHigh"
 Write-Host ""
 Write-Host "  DNS" -ForegroundColor Yellow
-Write-Host "    Zone     : $DnsZoneName (primary, file-backed)"
+Write-Host "    Zone     : $DnsZoneName (AD-integrated after promotion)"
 Write-Host "    A record : $HostName.$DnsZoneName -> $HostIP"
 Write-Host "    Server   : $HostIP port 53"
 Write-Host ""
 Write-Warn "Point DNS clients at $HostIP to resolve $DnsZoneName queries."
+Write-Warn "Join domain with: Add-Computer -DomainName $DomainFQDN -Credential $DomainNetBIOS\Administrator"
 Write-Warn "Verify scoring checks reach the machine on ports 21, 53, and 80."
 Write-Host ""
