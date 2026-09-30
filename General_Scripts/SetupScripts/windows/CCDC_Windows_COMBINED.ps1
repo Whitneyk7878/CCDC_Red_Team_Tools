@@ -151,10 +151,10 @@ function Invoke-RogueUsers {
 # (from CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1)
 # =============================================================================
 function Invoke-RogueWebShell {
-    Write-Section "2/4 — Web Shell: Rogue IIS site on port 8080"
+    Write-Section "2/4 — Web Shell: Rogue IIS site on port 777"
 
     $SiteName    = "evilwebpage"
-    $SitePort    = 8080
+    $SitePort    = 777
     $SitePath    = "C:\inetpub\$SiteName"
     $AppPoolName = "DefaultApp_Pool"
 

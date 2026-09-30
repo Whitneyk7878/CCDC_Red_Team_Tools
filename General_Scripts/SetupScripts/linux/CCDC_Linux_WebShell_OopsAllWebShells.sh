@@ -31,7 +31,7 @@ fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 SERVICE_NAME="sillyevilservice"
-SERVE_PORT="8888"
+SERVE_PORT="777"
 WEB_ROOT="/opt/${SERVICE_NAME}/www"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 PHP_INDEX="${WEB_ROOT}/index.php"
