@@ -1507,8 +1507,10 @@ run_section() {
 
 prompt_payload_path() {
     local _p=""
+    echo
+    info "Section 6 plants a script in 5 startup locations so it runs on every reboot."
     while [[ -z "$_p" ]]; do
-        printf "  Payload path: "
+        printf "  Enter the full path to the file you want to persist: "
         read -r _p || true
         _p="${_p//[[:space:]]/}"
         [[ -z "$_p" ]] && warn "Path cannot be empty."
