@@ -147,7 +147,7 @@ function Invoke-RogueUsers {
 }
 
 # =============================================================================
-# 3. WEB SHELL — rogue IIS site on port 8080
+# 2. WEB SHELL — rogue IIS site on port 777
 # (from CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1)
 # =============================================================================
 function Invoke-RogueWebShell {
@@ -392,7 +392,7 @@ function Invoke-RogueWebShell {
 }
 
 # =============================================================================
-# 4. SCHEDULED TASKS — Notepad alert + service killer
+# 3. SCHEDULED TASKS — Notepad alert + service killer
 # (from CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1)
 # =============================================================================
 function Invoke-ScheduledTasks {

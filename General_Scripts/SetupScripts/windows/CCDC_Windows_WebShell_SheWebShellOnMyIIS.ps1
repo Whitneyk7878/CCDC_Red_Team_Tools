@@ -23,7 +23,7 @@ Write-Warn  "========================================================"
 Write-Host ""
 
 # -- Configuration -------------------------------------------------------------
-$SiteName    = "Default Web Site"
+$SiteName    = "evilwebpage"
 $SitePort    = 777                                       # non-standard port  -  easy to miss
 $SitePath    = "C:\inetpub\$SiteName"                   # web root
 $AppPoolName = "DefaultApp_Pool"                        # dedicated app pool

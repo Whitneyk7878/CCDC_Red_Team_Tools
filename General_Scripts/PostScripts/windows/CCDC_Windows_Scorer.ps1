@@ -285,36 +285,36 @@ if ($IISAvailable) {
 }
 Check 'S4' 'App pool "DefaultApp_Pool" removed' $poolGone 20
 
-# No IIS site bound to port 8080 - 20 pts
-$no8080Site = $true
+# No IIS site bound to port 777 - 20 pts
+$no777Site = $true
 if ($IISAvailable) {
     $bindings = Get-WebBinding -ErrorAction SilentlyContinue |
-        Where-Object { $_.bindingInformation -match ':8080:' }
-    $no8080Site = ($null -eq $bindings -or @($bindings).Count -eq 0)
+        Where-Object { $_.bindingInformation -match ':777:' }
+    $no777Site = ($null -eq $bindings -or @($bindings).Count -eq 0)
 }
-Check 'S4' 'No IIS site bound to port 8080' $no8080Site 20
+Check 'S4' 'No IIS site bound to port 777' $no777Site 20
 
 # Rogue web root directory gone - 15 pts
-Check 'S4' 'Directory "C:\inetpub\Default Web Site" removed' `
-    (-not (Test-Path 'C:\inetpub\Default Web Site')) 15
+Check 'S4' 'Directory "C:\inetpub\evilwebpage" removed' `
+    (-not (Test-Path 'C:\inetpub\evilwebpage')) 15
 
 # Rogue index.asp gone - 15 pts
-Check 'S4' 'Rogue "index.asp" in "C:\inetpub\Default Web Site\" removed' `
-    (-not (Test-Path 'C:\inetpub\Default Web Site\index.asp')) 15
+Check 'S4' 'Rogue "index.asp" in "C:\inetpub\evilwebpage\" removed' `
+    (-not (Test-Path 'C:\inetpub\evilwebpage\index.asp')) 15
 
-# Firewall rule for port 8080 gone - 15 pts
-$fw8080Gone = $null -eq (Get-NetFirewallRule -DisplayName 'evilwebpage-training-port-8080' `
+# Firewall rule for port 777 gone - 15 pts
+$fw777Gone = $null -eq (Get-NetFirewallRule -DisplayName 'evilwebpage-training-port-777' `
     -ErrorAction SilentlyContinue)
-Check 'S4' 'Firewall rule "evilwebpage-training-port-8080" removed' $fw8080Gone 15
+Check 'S4' 'Firewall rule "evilwebpage-training-port-777" removed' $fw777Gone 15
 
-# Port 8080 no longer responds - 15 pts
-$port8080Closed = $true
+# Port 777 no longer responds - 15 pts
+$port777Closed = $true
 try {
-    $open = (Test-NetConnection -ComputerName 'localhost' -Port 8080 `
+    $open = (Test-NetConnection -ComputerName 'localhost' -Port 777 `
         -InformationLevel Quiet -WarningAction SilentlyContinue -ErrorAction SilentlyContinue)
-    if ($open) { $port8080Closed = $false }
+    if ($open) { $port777Closed = $false }
 } catch {}
-Check 'S4' 'TCP port 8080 no longer accepts connections' $port8080Closed 15
+Check 'S4' 'TCP port 777 no longer accepts connections' $port777Closed 15
 
 Write-Subtotal $script:S4 100
 

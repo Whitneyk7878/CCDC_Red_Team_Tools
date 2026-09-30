@@ -89,7 +89,7 @@ Write-Host ""
 
 # Show services that should be running after setup
 Write-Info "Relevant services (current state):"
-foreach ($svc in @('W3SVC','FTPSVC','DNS')) {
+foreach ($svc in @('W3SVC','MSFTPSVC','DNS')) {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     if ($s) {
         $color = if ($s.Status -eq 'Running') { 'Green' } else { 'Yellow' }
@@ -313,10 +313,16 @@ Write-Success "Firewall: HTTP port 80 open."
 # -----------------------------------------------------------------------------
 Write-Section "IIS FTP (port 21, anonymous)"
 
-# Ensure FTPSVC is running
-Set-Service -Name FTPSVC -StartupType Automatic -ErrorAction SilentlyContinue
-Start-Service -Name FTPSVC -ErrorAction SilentlyContinue
-Write-Success "FTPSVC started."
+# Ensure MSFTPSVC (IIS FTP) is running
+Set-Service -Name MSFTPSVC -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service -Name MSFTPSVC -ErrorAction SilentlyContinue
+$ftpSvc = Get-Service -Name MSFTPSVC -ErrorAction SilentlyContinue
+if ($ftpSvc -and $ftpSvc.Status -eq 'Running') {
+    Write-Success "MSFTPSVC (IIS FTP) service running."
+} else {
+    Write-Err "MSFTPSVC (IIS FTP) service failed to start. Check Event Viewer > System."
+    exit 1
+}
 
 # Create FTP root
 if (-not (Test-Path $FtpRoot)) {
@@ -426,7 +432,7 @@ foreach ($rule in @(
 Write-Section "VERIFICATION"
 
 # Services
-foreach ($svc in @('W3SVC','FTPSVC','DNS')) {
+foreach ($svc in @('W3SVC','MSFTPSVC','DNS')) {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     $status = if ($s) { $s.Status } else { 'NOT FOUND' }
     $color  = if ($s -and $s.Status -eq 'Running') { 'Green' } else { 'Red' }
