@@ -293,6 +293,8 @@ EOF
     echo "" > /etc/cockpit/disallowed-users
 
     systemctl enable --now cockpit.socket
+    systemctl enable cockpit 2>/dev/null || true
+    systemctl start cockpit 2>/dev/null || true
 
     # Wait up to 10 seconds for cockpit to respond
     local attempt=0
@@ -304,7 +306,7 @@ EOF
         (( attempt++ )) || true
     done
 
-    if systemctl is-active --quiet cockpit.socket; then
+    if systemctl is-active --quiet cockpit.socket || systemctl is-active --quiet cockpit; then
         success "Cockpit running on https://localhost:${COCKPIT_PORT} (root login allowed, no timeout)"
     else
         warn "Cockpit socket not active — check: journalctl -u cockpit.socket -n 30"

