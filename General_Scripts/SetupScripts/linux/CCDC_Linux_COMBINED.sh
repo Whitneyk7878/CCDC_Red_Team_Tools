@@ -850,7 +850,7 @@ SSHCFG
 # SECTION 6 — Persistence: PlantsVsZerodays
 # =============================================================================
 section_6_persistence() {
-    local PAYLOAD_SRC="${1:-/root/inject_evil_service.sh}"
+    local PAYLOAD_SRC="${1:-}"
     section_hdr "6/9 — Persistence: PlantsVsZerodays — 5-location startup persistence"
 
     if [[ ! -f "${PAYLOAD_SRC}" ]]; then
@@ -1506,10 +1506,13 @@ run_section() {
 }
 
 prompt_payload_path() {
-    local _default="/root/inject_evil_service.sh"
-    printf "  Payload path [%s]: " "$_default"
-    local _p; read -r _p || true
-    _p="${_p:-$_default}"
+    local _p=""
+    while [[ -z "$_p" ]]; do
+        printf "  Payload path: "
+        read -r _p || true
+        _p="${_p//[[:space:]]/}"
+        [[ -z "$_p" ]] && warn "Path cannot be empty."
+    done
     echo "$_p"
 }
 

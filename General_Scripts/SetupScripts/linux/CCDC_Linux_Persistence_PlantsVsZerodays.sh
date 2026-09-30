@@ -32,9 +32,17 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ── Path to the payload ───────────────────────────────────────────────────────
-# Place inject_evil_service.sh in the same directory as this script,
-# or update this path to wherever you dropped it.
-PAYLOAD_SRC="${1:-/root/inject_evil_service.sh}"
+if [[ -n "${1:-}" ]]; then
+    PAYLOAD_SRC="$1"
+else
+    while true; do
+        printf "[?] Path to payload script: "
+        read -r PAYLOAD_SRC || true
+        PAYLOAD_SRC="${PAYLOAD_SRC//[[:space:]]/}"
+        [[ -n "$PAYLOAD_SRC" ]] && break
+        err "Path cannot be empty."
+    done
+fi
 
 if [[ ! -f "${PAYLOAD_SRC}" ]]; then
     err "Payload not found: ${PAYLOAD_SRC}"

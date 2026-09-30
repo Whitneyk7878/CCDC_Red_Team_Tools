@@ -14,8 +14,7 @@
 #Requires -RunAsAdministrator
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$PayloadPath
+    [string]$PayloadPath = ""
 )
 
 # -- Colour helpers ------------------------------------------------------------
@@ -30,12 +29,18 @@ Write-Warn  " CCDC Blue Team Training  -  Windows Persistence Planter"
 Write-Warn  "================================================================"
 Write-Host ""
 
-# RUN COMMAND WITH THE PATH | SEE BELOW IF STATEMENT
+# -- Prompt for payload path if not supplied on the command line ---------------
+while ([string]::IsNullOrWhiteSpace($PayloadPath)) {
+    $PayloadPath = (Read-Host "  Path to payload script").Trim()
+    if ([string]::IsNullOrWhiteSpace($PayloadPath)) {
+        Write-Err "Path cannot be empty."
+    }
+}
 
 # -- Validate payload ----------------------------------------------------------
 if (-not (Test-Path $PayloadPath)) {
     Write-Err "Payload not found: $PayloadPath"
-    Write-Err "Usage: .\Plant-Persistence.ps1 -PayloadPath C:\path\to\payload.ps1"
+    Write-Err "Usage: .\CCDC_Windows_Persist_ClusterShells.ps1 -PayloadPath C:\path\to\payload.ps1"
     exit 1
 }
 
