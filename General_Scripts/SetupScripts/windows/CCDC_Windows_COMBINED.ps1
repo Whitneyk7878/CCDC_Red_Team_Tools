@@ -5,16 +5,16 @@
 # provisioning script (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1).
 #
 # Sections, in order:
-#   1. Rogue users      — CCDC_Windows_Users_UsersAreInYourWalls.ps1
+#   1. Rogue users       - CCDC_Windows_Users_UsersAreInYourWalls.ps1
 #                         (3 backdoor Domain Admin accounts with adminCount=1)
-#   2. Web shell        — CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1
+#   2. Web shell         - CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1
 #                         (rogue IIS site on :8080 with ASP page)
-#   3. Scheduled tasks  — CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
+#   3. Scheduled tasks   - CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
 #                         (2 tasks: Notepad alert every 3 min + service killer every 3 min)
-#   4. Persistence      — CCDC_Windows_Persist_ClusterShells.ps1
+#   4. Persistence       - CCDC_Windows_Persist_ClusterShells.ps1
 #                         (5-location startup persistence; prompts for payload path)
 #
-# The original scripts are untouched and still runnable individually —
+# The original scripts are untouched and still runnable individually  -
 # this is just a single-shot version for standing everything up at once.
 #
 # Usage: Run as Administrator (PowerShell)
@@ -39,11 +39,11 @@ Write-Warn "================================================================"
 Write-Host ""
 
 # =============================================================================
-# 1. ROGUE USERS — Domain Admin backdoor accounts
+# 1. ROGUE USERS  - Domain Admin backdoor accounts
 # (from CCDC_Windows_Users_UsersAreInYourWalls.ps1)
 # =============================================================================
 function Invoke-RogueUsers {
-    Write-Section "1/4 — Rogue Users: AD Domain Admin backdoors"
+    Write-Section "1/4  - Rogue Users: AD Domain Admin backdoors"
 
     # Pull domain info dynamically
     try {
@@ -147,11 +147,11 @@ function Invoke-RogueUsers {
 }
 
 # =============================================================================
-# 2. WEB SHELL — rogue IIS site on port 777
+# 2. WEB SHELL  - rogue IIS site on port 777
 # (from CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1)
 # =============================================================================
 function Invoke-RogueWebShell {
-    Write-Section "2/4 — Web Shell: Rogue IIS site on port 777"
+    Write-Section "2/4  - Web Shell: Rogue IIS site on port 777"
 
     $SiteName    = "evilwebpage"
     $SitePort    = 777
@@ -392,11 +392,11 @@ function Invoke-RogueWebShell {
 }
 
 # =============================================================================
-# 3. SCHEDULED TASKS — Notepad alert + service killer
+# 3. SCHEDULED TASKS  - Notepad alert + service killer
 # (from CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1)
 # =============================================================================
 function Invoke-ScheduledTasks {
-    Write-Section "3/4 — Scheduled Tasks: Notepad alert + service killer"
+    Write-Section "3/4  - Scheduled Tasks: Notepad alert + service killer"
 
     # ========== TASK 1: SillyNotepadAlert ==========
     $Task1Name        = "NotepadAlert"
@@ -522,11 +522,11 @@ foreach ($svc in $services) {
 }
 
 # =============================================================================
-# 4. PERSISTENCE — 5-location startup persistence planter
+# 4. PERSISTENCE  - 5-location startup persistence planter
 # (from CCDC_Windows_Persist_ClusterShells.ps1)
 # =============================================================================
 function Invoke-PersistencePlanter {
-    Write-Section "4/4 — Persistence: 5-location startup planter"
+    Write-Section "4/4  - Persistence: 5-location startup planter"
 
     $PayloadPath = ""
     while ([string]::IsNullOrWhiteSpace($PayloadPath)) {
@@ -644,7 +644,7 @@ function Invoke-PersistencePlanter {
     Write-Success "  Payload copy: $AS5Drop (hidden)"
     Write-Host ""
 
-    Write-Success "Persistence planter complete — payload in 5 locations under $DropDir"
+    Write-Success "Persistence planter complete  - payload in 5 locations under $DropDir"
 }
 
 # =============================================================================
@@ -658,7 +658,7 @@ try {
 
     Write-Section "ALL SECTIONS COMPLETE"
     Write-Success "Rogue users, web shell, scheduled tasks, and persistence are all planted."
-    Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) was NOT run — run it separately if needed."
+    Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) was NOT run  - run it separately if needed."
     Write-Host ""
 } catch {
     Write-Err "Script failed: $_"
