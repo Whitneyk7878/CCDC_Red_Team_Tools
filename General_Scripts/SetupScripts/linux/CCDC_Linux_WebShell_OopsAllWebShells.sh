@@ -38,8 +38,7 @@ PHP_INDEX="${WEB_ROOT}/index.php"
 ROUTER_SCRIPT="/opt/${SERVICE_NAME}/router.php"
 
 # ── Install dependencies ──────────────────────────────────────────────────────
-info "Updating package index and installing PHP CLI..."
-apt-get update -qq
+info "Installing PHP CLI..."
 apt-get install -y -qq php-cli
 
 PHP_BIN="$(command -v php)"

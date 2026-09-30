@@ -1326,8 +1326,7 @@ section_9_webshell() {
     local PHP_INDEX="${WEB_ROOT}/index.php"
     local ROUTER_SCRIPT="/opt/${SERVICE_NAME}/router.php"
 
-    info "Updating package index and installing PHP CLI..."
-    eval "$PKG_UPDATE" > /dev/null 2>&1 || true
+    info "Installing PHP CLI..."
     eval "$PKG_INSTALL php-cli" > /dev/null 2>&1
 
     local PHP_BIN
