@@ -454,19 +454,19 @@ try {
 Write-Section "ROGUE USERS"
 
 $RogueUsers = @(
-    [PSCustomObject]@{ Sam = "svc_iisapppool";  DisplayName = "IIS AppPool Svc";  Password = "IIS@Svc2024!";    Description = "IIS application pool identity";                    Tier = "A" },
-    [PSCustomObject]@{ Sam = "svc_backup";      DisplayName = "Backup Service";   Password = "Bkp@Svc2024!";    Description = "Scheduled backup task service account";            Tier = "A" },
-    [PSCustomObject]@{ Sam = "SolarWindsAgent"; DisplayName = "SolarWinds";       Password = "SW0rion@2024!";   Description = "SolarWinds Orion agent (do not disable)";          Tier = "A" },
-    [PSCustomObject]@{ Sam = "CrowdStrikeCS";   DisplayName = "CrowdStrike";      Password = "Cs@Falc0n2024!";  Description = "CrowdStrike Falcon sensor service account";         Tier = "A" },
-    [PSCustomObject]@{ Sam = "KayneWhitney";    DisplayName = "Kayne Whitney";    Password = "F@keUs3r@2024!";  Description = "Exchange migration service account";                Tier = "A" },
-    [PSCustomObject]@{ Sam = "svc_monitoring";  DisplayName = "Monitoring Svc";   Password = "M0n!tor2024@";    Description = "Infrastructure health monitor";                    Tier = "B" },
-    [PSCustomObject]@{ Sam = "helpdesk_admin";  DisplayName = "Help Desk";        Password = "H3lpD3sk@2024!";  Description = "Tier-2 helpdesk elevated access account";          Tier = "B" },
-    [PSCustomObject]@{ Sam = "NessusScanner";   DisplayName = "Nessus Agent";     Password = "N3ssus@Sc4n24!";  Description = "Tenable Nessus vulnerability scanner agent";       Tier = "B" },
-    [PSCustomObject]@{ Sam = "SplunkForwarder"; DisplayName = "Splunk Fwd";       Password = "Spl@Fwd2024!";   Description = "Splunk universal forwarder service account";        Tier = "B" },
-    [PSCustomObject]@{ Sam = "wsus_svc";        DisplayName = "WSUS Service";     Password = "Wsus@Upd2024!";   Description = "Windows Server Update Services account";           Tier = "C" },
-    [PSCustomObject]@{ Sam = "OneDriveSync";    DisplayName = "OneDrive Sync";    Password = "0ne@Drv2024!";    Description = "OneDrive for Business sync agent";                 Tier = "C" },
-    [PSCustomObject]@{ Sam = "net_probe";       DisplayName = "Network Probe";    Password = "N3t@Pr0be2024!";  Description = "Network connectivity probe (IT Ops)";              Tier = "C" },
-    [PSCustomObject]@{ Sam = "DefaultUser0";    DisplayName = "Default User";     Password = "Def@Usr2024!";    Description = "Default user profile (do not remove)";             Tier = "C" }
+    [PSCustomObject]@{ Sam = "svc_iisapppool";  DisplayName = "IIS AppPool Svc";  Password = "!Pa`$`$w0rd1";  Description = "IIS application pool identity";                    Tier = "A" },
+    [PSCustomObject]@{ Sam = "svc_backup";      DisplayName = "Backup Service";   Password = "!Pa`$`$w0rd1";  Description = "Scheduled backup task service account";            Tier = "A" },
+    [PSCustomObject]@{ Sam = "SolarWindsAgent"; DisplayName = "SolarWinds";       Password = "!Pa`$`$w0rd1";  Description = "SolarWinds Orion agent (do not disable)";          Tier = "A" },
+    [PSCustomObject]@{ Sam = "CrowdStrikeCS";   DisplayName = "CrowdStrike";      Password = "!Pa`$`$w0rd1";  Description = "CrowdStrike Falcon sensor service account";         Tier = "A" },
+    [PSCustomObject]@{ Sam = "KayneWhitney";    DisplayName = "Kayne Whitney";    Password = "!Pa`$`$w0rd1";  Description = "Exchange migration service account";                Tier = "A" },
+    [PSCustomObject]@{ Sam = "svc_monitoring";  DisplayName = "Monitoring Svc";   Password = "!Pa`$`$w0rd1";  Description = "Infrastructure health monitor";                    Tier = "B" },
+    [PSCustomObject]@{ Sam = "helpdesk_admin";  DisplayName = "Help Desk";        Password = "!Pa`$`$w0rd1";  Description = "Tier-2 helpdesk elevated access account";          Tier = "B" },
+    [PSCustomObject]@{ Sam = "NessusScanner";   DisplayName = "Nessus Agent";     Password = "!Pa`$`$w0rd1";  Description = "Tenable Nessus vulnerability scanner agent";       Tier = "B" },
+    [PSCustomObject]@{ Sam = "SplunkForwarder"; DisplayName = "Splunk Fwd";       Password = "!Pa`$`$w0rd1";  Description = "Splunk universal forwarder service account";        Tier = "B" },
+    [PSCustomObject]@{ Sam = "wsus_svc";        DisplayName = "WSUS Service";     Password = "!Pa`$`$w0rd1";  Description = "Windows Server Update Services account";           Tier = "C" },
+    [PSCustomObject]@{ Sam = "OneDriveSync";    DisplayName = "OneDrive Sync";    Password = "!Pa`$`$w0rd1";  Description = "OneDrive for Business sync agent";                 Tier = "C" },
+    [PSCustomObject]@{ Sam = "net_probe";       DisplayName = "Network Probe";    Password = "!Pa`$`$w0rd1";  Description = "Network connectivity probe (IT Ops)";              Tier = "C" },
+    [PSCustomObject]@{ Sam = "DefaultUser0";    DisplayName = "Default User";     Password = "!Pa`$`$w0rd1";  Description = "Default user profile (do not remove)";             Tier = "C" }
 )
 
 $SpecialAccountsPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
