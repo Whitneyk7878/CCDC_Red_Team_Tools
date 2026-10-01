@@ -35,7 +35,7 @@ DURING competition
 
 | Script | What it plants |
 |---|---|
-| `CCDC_Windows_Users_UsersAreInYourWalls.ps1` | 3 backdoor Domain Admin accounts |
+| `CCDC_Windows_Users_UsersAreInYourWalls.ps1` | 3 backdoor accounts: local Admins always, + AD Domain Admins if domain is available |
 | `CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1` | Rogue IIS site on port 8080 |
 | `CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1` | 2 scheduled tasks: Notepad alert + service killer |
 | `CCDC_Windows_Persistence_ClusterBombShells.ps1` | Payload in 5 startup locations |
