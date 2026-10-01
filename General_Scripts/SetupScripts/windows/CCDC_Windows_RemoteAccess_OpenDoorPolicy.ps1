@@ -87,22 +87,23 @@ try {
 
     # Add Authenticated Users to Remote Desktop Users so every local/domain
     # account can connect without any explicit permission grant
-    try {
-        $sid     = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
-        $account = $sid.Translate([System.Security.Principal.NTAccount])
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member $account -ErrorAction Stop
+    # Add-LocalGroupMember can't convert NTAccount to LocalPrincipal for NT AUTHORITY
+    # accounts, and fails on DCs where the local SAM groups behave differently.
+    # net localgroup handles both cases reliably (exit 2 = already a member, not an error).
+    & net localgroup "Remote Desktop Users" "NT AUTHORITY\Authenticated Users" /add 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
         Write-Warn "  Authenticated Users added to Remote Desktop Users group"
-    } catch {
-        Write-Warn "  Authenticated Users may already be in Remote Desktop Users: $_"
+    } else {
+        Write-Warn "  Could not add Authenticated Users to Remote Desktop Users (exit $LASTEXITCODE)"
     }
 
     # Enable and add the built-in Guest account as an obvious weak-credential find
-    net user Guest /active:yes 2>&1 | Out-Null
-    try {
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Guest" -ErrorAction Stop
+    & net user Guest /active:yes 2>&1 | Out-Null
+    & net localgroup "Remote Desktop Users" "Guest" /add 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 2) {
         Write-Warn "  Guest account enabled and added to Remote Desktop Users"
-    } catch {
-        Write-Warn "  Guest may already be in Remote Desktop Users: $_"
+    } else {
+        Write-Warn "  Could not add Guest to Remote Desktop Users (exit $LASTEXITCODE)"
     }
 
     Set-Service -Name "TermService" -StartupType Automatic -ErrorAction Stop
@@ -131,8 +132,17 @@ try {
 Write-Section "2/5  WinRM / PowerShell Remoting  (TCP 5985)"
 
 try {
-    Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction Stop
-    Write-Success "PSRemoting enabled"
+    try {
+        Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction Stop
+    } catch {
+        # Enable-PSRemoting calls winrm quickconfig which checks the firewall service.
+        # If the firewall service (MpsSvc) is disabled, it throws even though WinRM itself
+        # is already running. Catch this specific case and continue.
+        if ($_ -match 'firewall' -or $_ -match 'WSManFault') {
+            Write-Warn "  Enable-PSRemoting partial (firewall service disabled) -- WinRM already running, continuing"
+        } else { throw }
+    }
+    Write-Success "WinRM service running"
 
     # Trust every remote host -- no hostname verification whatsoever
     Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force -ErrorAction Stop
@@ -237,9 +247,23 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
         Write-Info "  Default SSH shell set to PowerShell"
     }
 
-    Set-Service -Name "sshd" -StartupType Automatic -ErrorAction Stop
-    Restart-Service -Name "sshd" -ErrorAction Stop
-    Write-Success "sshd started (Automatic)"
+    # Add-WindowsCapability installs the binary but doesn't always register the
+    # service in SCM until after a reboot. Check and register manually if needed.
+    $sshdExe = "$env:SystemRoot\System32\OpenSSH\sshd.exe"
+    $sshdSvc = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+    if (-not $sshdSvc -and (Test-Path $sshdExe)) {
+        & sc.exe create sshd binPath= "`"$sshdExe`"" start= auto | Out-Null
+        Write-Info "  sshd service registered via sc.exe"
+        Start-Sleep -Seconds 2
+        $sshdSvc = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+    }
+    if ($sshdSvc) {
+        Set-Service -Name "sshd" -StartupType Automatic -ErrorAction Stop
+        Restart-Service -Name "sshd" -Force -ErrorAction Stop
+        Write-Success "sshd started (Automatic)"
+    } else {
+        Write-Warn "  sshd not in SCM yet -- config written; restart may be required"
+    }
 
     $existing = Get-NetFirewallRule -DisplayName "CCDC-SSH-Any" -ErrorAction SilentlyContinue
     if (-not $existing) {
@@ -263,8 +287,12 @@ Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
 Write-Section "4/5  Telnet Server  (TCP 23)"
 
 try {
-    $feature = Get-WindowsFeature -Name Telnet-Server -ErrorAction Stop
-    if ($feature.InstallState -ne "Installed") {
+    # Use SilentlyContinue -- Get-WindowsFeature returns $null (not an error) on some SKUs.
+    # With Set-StrictMode -Version Latest, $null.InstallState throws if not guarded.
+    $feature = Get-WindowsFeature -Name Telnet-Server -ErrorAction SilentlyContinue
+    if ($null -eq $feature) {
+        Write-Warn "  Telnet-Server feature not found on this SKU -- skipping install"
+    } elseif ($feature.InstallState -ne "Installed") {
         Write-Info "Installing Telnet Server feature..."
         Install-WindowsFeature -Name Telnet-Server -ErrorAction Stop | Out-Null
         Write-Success "Telnet Server installed"
@@ -295,9 +323,14 @@ try {
 
     Set-ItemProperty -Path $TelnetRegPath -Name "AllowTrustedDomain" -Value 1 -Type DWord -ErrorAction Stop
 
-    Set-Service -Name "TlntSvr" -StartupType Automatic -ErrorAction Stop
-    Start-Service -Name "TlntSvr" -ErrorAction Stop
-    Write-Success "TlntSvr started (Automatic)"
+    $tlntSvc = Get-Service -Name "TlntSvr" -ErrorAction SilentlyContinue
+    if ($tlntSvc) {
+        Set-Service  -Name "TlntSvr" -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name "TlntSvr" -ErrorAction Stop
+        Write-Success "TlntSvr started (Automatic)"
+    } else {
+        Write-Warn "  TlntSvr service not found -- registry config written; restart may be required"
+    }
 
     $existing = Get-NetFirewallRule -DisplayName "CCDC-Telnet-Any" -ErrorAction SilentlyContinue
     if (-not $existing) {
@@ -321,8 +354,10 @@ try {
 Write-Section "5/5  SNMP Service  (UDP 161)"
 
 try {
-    $feature = Get-WindowsFeature -Name SNMP-Service -ErrorAction Stop
-    if ($feature.InstallState -ne "Installed") {
+    $feature = Get-WindowsFeature -Name SNMP-Service -ErrorAction SilentlyContinue
+    if ($null -eq $feature) {
+        Write-Warn "  SNMP-Service feature not found on this SKU -- skipping install"
+    } elseif ($feature.InstallState -ne "Installed") {
         Write-Info "Installing SNMP Service feature..."
         Install-WindowsFeature -Name SNMP-Service -IncludeManagementTools -ErrorAction Stop | Out-Null
         Write-Success "SNMP Service installed"
@@ -335,6 +370,12 @@ try {
 }
 
 try {
+    # Guard the whole registry block -- $SnmpBasePath may not exist yet if the
+    # SNMP feature was just installed and a restart is pending.
+    if (-not (Test-Path $SnmpBasePath)) {
+        New-Item -Path $SnmpBasePath -Force | Out-Null
+    }
+
     # ValidCommunities: name -> DWORD permission level
     #   1=NONE  2=NOTIFY  4=READ ONLY  8=READ WRITE  16=READ CREATE
     $validCommPath = "$SnmpBasePath\ValidCommunities"
@@ -359,9 +400,17 @@ try {
     Set-ItemProperty -Path $SnmpBasePath -Name "EnableAuthenticationTraps" -Value 0 -Type DWord -ErrorAction Stop
     Write-Warn "  EnableAuthenticationTraps = 0 (failed-auth traps suppressed)"
 
-    Set-Service -Name "SNMP" -StartupType Automatic -ErrorAction Stop
-    Restart-Service -Name "SNMP" -ErrorAction Stop
-    Write-Success "SNMP started (Automatic)"
+    # SNMP service may not be available in SCM until after reboot (Windows shows
+    # "You must restart" after Install-WindowsFeature for this feature).
+    $snmpSvc = Get-Service -Name "SNMP" -ErrorAction SilentlyContinue
+    if ($snmpSvc) {
+        Set-Service  -Name "SNMP" -StartupType Automatic -ErrorAction Stop
+        Restart-Service -Name "SNMP" -ErrorAction Stop
+        Write-Success "SNMP started (Automatic)"
+    } else {
+        Write-Warn "  SNMP service not yet in SCM -- restart required to start service"
+        Write-Warn "  Registry config written; communities and permissions take effect after reboot"
+    }
 
     $existing = Get-NetFirewallRule -DisplayName "CCDC-SNMP-Any" -ErrorAction SilentlyContinue
     if (-not $existing) {

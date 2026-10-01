@@ -52,9 +52,10 @@ $Task1Action  = New-ScheduledTaskAction `
     -Argument   "-NonInteractive -WindowStyle Hidden -EncodedCommand $Task1Encoded"
 
 $Task1Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 3) `
-    -RepetitionDuration ([System.TimeSpan]::MaxValue) `
+    -RepetitionDuration (New-TimeSpan -Days 3650) `
     -Once -At (Get-Date).AddSeconds(10)   # start almost immediately
-# Without -RepetitionDuration the trigger silently stops repeating after ~1 day on Server 2019.
+# [System.TimeSpan]::MaxValue serializes to P99999999DT23H59M59S which the Task Scheduler
+# XML parser rejects (HRESULT 0x80041318). 3650 days (10 years) is the practical max.
 
 $Task1Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit     (New-TimeSpan -Minutes 5) `
@@ -131,7 +132,7 @@ $Task2Action  = New-ScheduledTaskAction `
     -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $Task2Encoded"
 
 $Task2Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 3) `
-    -RepetitionDuration ([System.TimeSpan]::MaxValue) `
+    -RepetitionDuration (New-TimeSpan -Days 3650) `
     -Once -At (Get-Date).AddSeconds(30)   # stagger slightly from Task 1
 
 $Task2Settings = New-ScheduledTaskSettingsSet `
