@@ -4,23 +4,32 @@
 # Combines attack setup scripts from SetupScripts/windows/, EXCEPT the target
 # provisioning script (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1).
 #
-# Sections, in order:
-#   1. Rogue users       - CCDC_Windows_Users_UsersAreInYourWalls.ps1
+# Modules (each mirrors its standalone script):
+#   1. Rogue Users       - CCDC_Windows_Users_UsersAreInYourWalls.ps1
 #                         (3 backdoor Domain Admin accounts with adminCount=1)
-#   2. Web shell         - CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1
-#                         (rogue IIS site on :8080 with ASP page)
-#   3. Scheduled tasks   - CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
+#   2. Web Shell         - CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1
+#                         (rogue IIS site on port 777 with ASP page)
+#   3. Scheduled Tasks   - CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
 #                         (2 tasks: Notepad alert every 3 min + service killer every 3 min)
 #   4. Persistence       - CCDC_Windows_Persist_ClusterShells.ps1
 #                         (5-location startup persistence; prompts for payload path)
 #
-# The original scripts are untouched and still runnable individually  -
-# this is just a single-shot version for standing everything up at once.
+# Usage:
+#   Interactive menu  : .\CCDC_Windows_COMBINED.ps1
+#   Run specific mods : .\CCDC_Windows_COMBINED.ps1 -Modules Users,WebShell
+#   Run all silently  : .\CCDC_Windows_COMBINED.ps1 -Modules Users,WebShell,ScheduledTasks,Persistence
 #
-# Usage: Run as Administrator (PowerShell)
+# Run as Administrator (PowerShell 5.1+)
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
 #Requires -RunAsAdministrator
+
+param(
+    # Supply module names to skip the interactive menu.
+    # Valid values: Users, WebShell, ScheduledTasks, Persistence
+    # Numbers 1-4 also accepted.  Example: -Modules Users,WebShell
+    [string[]]$Modules = @()
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -648,19 +657,89 @@ function Invoke-PersistencePlanter {
 }
 
 # =============================================================================
-# MAIN
+# MAIN  - Interactive menu or -Modules param dispatch
 # =============================================================================
-try {
-    Invoke-RogueUsers
-    Invoke-RogueWebShell
-    Invoke-ScheduledTasks
-    Invoke-PersistencePlanter
 
-    Write-Section "ALL SECTIONS COMPLETE"
-    Write-Success "Rogue users, web shell, scheduled tasks, and persistence are all planted."
-    Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) was NOT run  - run it separately if needed."
+function Show-Menu {
     Write-Host ""
-} catch {
-    Write-Err "Script failed: $_"
+    Write-Host "  Select modules to run (numbers, comma-separated, or A for all):" -ForegroundColor Yellow
+    Write-Host "    [1] Rogue Users       - 3 backdoor Domain Admin AD accounts"
+    Write-Host "    [2] Web Shell         - Rogue IIS site on port 777"
+    Write-Host "    [3] Scheduled Tasks   - Notepad alert + service killer every 3 min"
+    Write-Host "    [4] Persistence       - 5-location startup persistence planter"
+    Write-Host "    [A] All of the above"
+    Write-Host "    [Q] Quit"
+    Write-Host ""
+}
+
+# Map both numbers and names to a canonical name
+$moduleMap = @{
+    '1'              = 'Users'
+    '2'              = 'WebShell'
+    '3'              = 'ScheduledTasks'
+    '4'              = 'Persistence'
+    'USERS'          = 'Users'
+    'WEBSHELL'       = 'WebShell'
+    'SCHEDULEDTASKS' = 'ScheduledTasks'
+    'PERSISTENCE'    = 'Persistence'
+}
+
+$selected = @()
+
+if ($Modules.Count -gt 0) {
+    $selected = $Modules
+} else {
+    Show-Menu
+    $raw = (Read-Host "  Choice").Trim().ToUpper()
+
+    if ($raw -eq 'Q') {
+        Write-Warn "Aborted."
+        exit 0
+    }
+
+    if ($raw -eq 'A') {
+        $selected = @('1','2','3','4')
+    } else {
+        $selected = $raw -split '[,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+    }
+}
+
+$toRun = @()
+foreach ($s in $selected) {
+    $key = $s.ToUpper()
+    if ($moduleMap.ContainsKey($key)) {
+        $canonical = $moduleMap[$key]
+        if ($toRun -notcontains $canonical) { $toRun += $canonical }
+    } else {
+        Write-Warn "Unknown selection '$s' -- skipping."
+    }
+}
+
+if ($toRun.Count -eq 0) {
+    Write-Err "No valid modules selected. Exiting."
     exit 1
 }
+
+Write-Host ""
+Write-Info "Modules to run: $($toRun -join ', ')"
+
+# Always execute in dependency order: Users -> WebShell -> ScheduledTasks -> Persistence
+foreach ($mod in @('Users','WebShell','ScheduledTasks','Persistence')) {
+    if ($toRun -contains $mod) {
+        try {
+            switch ($mod) {
+                'Users'          { Invoke-RogueUsers }
+                'WebShell'       { Invoke-RogueWebShell }
+                'ScheduledTasks' { Invoke-ScheduledTasks }
+                'Persistence'    { Invoke-PersistencePlanter }
+            }
+        } catch {
+            Write-Err "Module '$mod' failed: $_"
+        }
+    }
+}
+
+Write-Section "DONE"
+Write-Success "Selected modules complete."
+Write-Warn "Target setup (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1) is separate -- run it independently if needed."
+Write-Host ""
