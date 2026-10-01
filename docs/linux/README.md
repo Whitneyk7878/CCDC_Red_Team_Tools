@@ -38,7 +38,7 @@ DURING competition
 | Script | What it plants |
 |---|---|
 | `CCDC_Linux_Users_HomeIntruders.sh` | 3 sudo backdoor accounts + immutable `/etc/passwd` and `/etc/shadow` |
-| `CCDC_Linux_WebShell_OopsAllWebShells.sh` | Rogue PHP service (`sillyevilservice`) on port 8888 |
+| `CCDC_Linux_WebShell_OopsAllWebShells.sh` | Rogue PHP service (`php-session-mgr`) on port 8743 |
 | `CCDC_Linux_CronJobs_ImGonnaCron.sh` | 2 cron jobs that keep killing legit services |
 | `CCDC_Linux_Persistence_PlantsVsZerodays.sh` | Payload in 5 startup locations |
 | `CCDC_Linux_BeeMovie_OopsAllBees.sh` | `systemd-pipewire-multithread-runner` service + timer; re-plants Bee Movie `PROMPT_COMMAND` every 60 s |

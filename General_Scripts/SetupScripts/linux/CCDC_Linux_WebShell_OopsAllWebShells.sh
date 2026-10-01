@@ -30,8 +30,8 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-SERVICE_NAME="sillyevilservice"
-SERVE_PORT="777"
+SERVICE_NAME="php-session-mgr"
+SERVE_PORT="8743"
 WEB_ROOT="/opt/${SERVICE_NAME}/www"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 PHP_INDEX="${WEB_ROOT}/index.php"
@@ -65,7 +65,7 @@ $ts       = date('Y-m-d H:i:s T');
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>sillyevilservice</title>
+  <title>php-session-mgr</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -111,7 +111,7 @@ $ts       = date('Y-m-d H:i:s T');
   <h1>GET RID OF ME!</h1>
   <p class="subtitle">Wow! You found a rogue service. Now take it down. This is an evil service that picks a number 1-100 every second and if it picks 67 your computer will be destroyed! <3</p>
   <div class="meta">
-    <span>service:</span> sillyevilservice &nbsp;|&nbsp;
+    <span>service:</span> php-session-mgr &nbsp;|&nbsp;
     <span>host:</span> <?= htmlspecialchars($hostname) ?> &nbsp;|&nbsp;
     <span>port:</span> <?= htmlspecialchars($port) ?><br>
     <span>running as:</span> <?= htmlspecialchars(posix_getpwuid(posix_geteuid())['name'] ?? 'unknown') ?> &nbsp;|&nbsp;
@@ -141,7 +141,7 @@ success "Router script written: ${ROUTER_SCRIPT}"
 info "Writing systemd service unit: ${SERVICE_FILE}..."
 cat > "${SERVICE_FILE}" <<EOF
 [Unit]
-Description=sillyevilservice - system network optimiser daemon
+Description=php-session-mgr - network session management daemon
 Documentation=https://example.com
 After=network.target
 Wants=network.target

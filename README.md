@@ -43,7 +43,7 @@ Scripts for the Cyber@Stout CCDC tryout, split into **target setup** (provision 
 | Script | What it plants |
 |---|---|
 | `CCDC_Linux_Users_HomeIntruders.sh` | 3 backdoor sudo accounts + `chattr +i` on `/etc/passwd` and `/etc/shadow` |
-| `CCDC_Linux_WebShell_OopsAllWebShells.sh` | Rogue PHP service (`sillyevilservice`) on port 8888 running as root |
+| `CCDC_Linux_WebShell_OopsAllWebShells.sh` | Rogue PHP service (`php-session-mgr`) on port 8743 running as root |
 | `CCDC_Linux_CronJobs_ImGonnaCron.sh` | 2 cron jobs in `/etc/cron.d/` that stop+mask scored services every 3–5 min |
 | `CCDC_Linux_Persistence_PlantsVsZerodays.sh` | Payload dropped in 5 separate startup locations |
 | `CCDC_Linux_BeeMovie_OopsAllBees.sh` | Disguised `systemd-pipewire-multithread-runner` service + timer that re-plants a `PROMPT_COMMAND` printing the Bee Movie opening before every bash prompt |

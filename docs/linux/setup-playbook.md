@@ -28,9 +28,9 @@ Run them in this order — each layer depends on the previous one being in place
 - Creates three backdoor accounts with `sudo` (full `NOPASSWD`) privileges:
   | Username | Password | Disguise level |
   |---|---|---|
-  | `ubuntu` | `Rem0veMe!` | Low — obvious name |
-  | `johnredteam` | `R3dT3am@2024` | None — obviously adversarial |
-  | `systemd-bus-proxy` | `Ev1lR00t#!` | High — looks like a system account |
+  | `landscape` | `Gr0undzer0#` | Medium — Ubuntu Landscape service user |
+  | `nagios` | `Bl4ckH4t@2025` | Medium — monitoring agent user |
+  | `systemd-oom` | `K3rn3lP4n1c$` | High — looks like a systemd internal account |
 - Writes a `/etc/sudoers.d/99-<username>` drop-in for each user (second persistence point)
 - Sets `chattr +i` (immutable bit) on `/etc/passwd`, `/etc/shadow`, and all three sudoers drop-ins
 
@@ -43,12 +43,12 @@ sudo bash SetupScripts/linux/CCDC_Linux_Users_HomeIntruders.sh
 
 **Blue team must:**
 1. `chattr -i /etc/passwd /etc/shadow` — remove immutable flag before they can delete users
-2. `chattr -i /etc/sudoers.d/99-ubuntu` (and the other two)
-3. `userdel -r ubuntu && userdel -r johnredteam && userdel -r systemd-bus-proxy`
-4. `rm /etc/sudoers.d/99-ubuntu /etc/sudoers.d/99-johnredteam /etc/sudoers.d/99-systemd-bus-proxy`
+2. `chattr -i /etc/sudoers.d/99-landscape` (and the other two)
+3. `userdel -r landscape && userdel -r nagios && userdel -r systemd-oom`
+4. `rm /etc/sudoers.d/99-landscape /etc/sudoers.d/99-nagios /etc/sudoers.d/99-systemd-oom`
 
 **Notes:**
-- `systemd-bus-proxy` is the sneaky one — it impersonates a real systemd internal account name. Blue team may skip it.
+- `systemd-oom` is the sneaky one — it impersonates a real systemd internal account name. Blue team may skip it.
 - The sudoers drop-ins are a second persistence path: even if they delete the users, a re-add + the drop-in gives full root back.
 
 ---
@@ -57,8 +57,8 @@ sudo bash SetupScripts/linux/CCDC_Linux_Users_HomeIntruders.sh
 
 **What it does:**
 - Installs `php-cli` via apt
-- Creates a PHP web app at `/opt/sillyevilservice/www/index.php` that displays **"GET RID OF ME!"**
-- Registers and starts a systemd service called `sillyevilservice` listening on **port 8888**, running as root
+- Creates a PHP web app at `/opt/php-session-mgr/www/index.php` that displays **"GET RID OF ME!"**
+- Registers and starts a systemd service called `php-session-mgr` listening on **port 8743**, running as root
 - Enables the service so it persists across reboots
 
 **Run it:**
@@ -68,22 +68,22 @@ sudo bash SetupScripts/linux/CCDC_Linux_WebShell_OopsAllWebShells.sh
 
 **Verify it's live:**
 ```bash
-curl http://localhost:8888
-ss -tlnp | grep 8888
+curl http://localhost:8743
+ss -tlnp | grep 8743
 ```
 
 **Blue team must:**
 ```bash
-systemctl stop sillyevilservice
-systemctl disable sillyevilservice
-rm /etc/systemd/system/sillyevilservice.service
+systemctl stop php-session-mgr
+systemctl disable php-session-mgr
+rm /etc/systemd/system/php-session-mgr.service
 systemctl daemon-reload
-rm -rf /opt/sillyevilservice
+rm -rf /opt/php-session-mgr
 ```
 
 **Notes:**
-- The service description reads `"system network optimiser daemon"` — designed to blend in.
-- Running on non-standard port 8888; blue team needs to `ss -tlnp` or `netstat` to find it.
+- The service description reads `"network session management daemon"` — designed to blend in.
+- Running on non-standard port 8743; blue team needs to `ss -tlnp` or `netstat` to find it.
 
 ---
 
@@ -93,8 +93,8 @@ rm -rf /opt/sillyevilservice
 - Writes two files to `/etc/cron.d/`:
   | File | Schedule | Disguise |
   |---|---|---|
-  | `grub-service` | every 5 min | Looks like a GRUB boot helper |
-  | `sillyevilcronjob` | every 3 min | Obvious evil name for trainees to spot |
+  | `fwupd-notify` | every 5 min | Looks like a firmware update notifier |
+  | `apt-daily-compat` | every 3 min | Looks like an apt maintenance job |
 - Both jobs run as root and execute: `systemctl stop` + `systemctl mask` on **dovecot, postfix, apache2, splunk**
 - Effect: even if blue team starts their services back up, these jobs kill them again within 3–5 minutes
 
@@ -105,14 +105,14 @@ sudo bash SetupScripts/linux/CCDC_Linux_CronJobs_ImGonnaCron.sh
 
 **Blue team must:**
 ```bash
-rm /etc/cron.d/grub-service /etc/cron.d/sillyevilcronjob
+rm /etc/cron.d/fwupd-notify /etc/cron.d/apt-daily-compat
 # Also unmask and restart their services:
 systemctl unmask dovecot postfix apache2 splunkd
 systemctl start dovecot postfix apache2 splunkd
 ```
 
 **Notes:**
-- `grub-service` is the harder one to find — its name looks plausible. `sillyevilcronjob` is intentionally obvious.
+- Both cron file names look plausible — blue team must read each one's content to identify them as malicious.
 - Blue team often forgets to check `/etc/cron.d/` — they look at user crontabs first.
 - The masking means restarting the service is not enough; they must unmask before the service will come back.
 
@@ -229,7 +229,7 @@ nano /etc/bash.bashrc
 /usr/local/lib/              ← dot-prefix files AND systemd-pipewire-multithread-runner/ library (use ls -la)
 /root/.bashrc
 /etc/bash.bashrc             ← check for systemd-pipewire-multithread-runner source line near bottom
-/opt/sillyevilservice/
+/opt/php-session-mgr/
 /etc/passwd + /etc/shadow    ← check immutable bit with lsattr
 ```
 

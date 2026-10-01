@@ -176,7 +176,7 @@ setup_ssh() {
     [[ -f /etc/ssh/sshd_config.bak ]] || cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 
     cat > /etc/ssh/sshd_config <<'EOF'
-# CCDC Training Config — intentionally permissive
+# SSH Configuration
 Port 22
 AddressFamily any
 ListenAddress 0.0.0.0
@@ -408,8 +408,8 @@ setup_tftp() {
     chmod 777 "$TFTP_ROOT"
 
     # Drop a marker file blue team should find
-    echo "CCDC TFTP server — unauthenticated file read/write enabled" > "$TFTP_ROOT/README_CCDC.txt"
-    chmod 644 "$TFTP_ROOT/README_CCDC.txt"
+    echo "TFTP server — file transfer enabled" > "$TFTP_ROOT/README.txt"
+    chmod 644 "$TFTP_ROOT/README.txt"
 
     case "$OS" in
         ubuntu|debian)

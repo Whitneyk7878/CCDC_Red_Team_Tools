@@ -32,9 +32,9 @@ fi
 # ── User definitions ──────────────────────────────────────────────────────────
 # Format: "username:password"
 declare -a EVIL_USERS=(
-    "ubuntu:Rem0veMe!"
-    "johnredteam:R3dT3am@2024"
-    "systemd-bus-proxy:Ev1lR00t#!"
+    "landscape:Gr0undzer0#"
+    "nagios:Bl4ckH4t@2025"
+    "systemd-oom:K3rn3lP4n1c$"
 )
 
 USER_SHELL="/bin/bash"
