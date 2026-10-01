@@ -11,7 +11,7 @@
 # Run as Administrator (PowerShell).  Safe to re-run -- idempotent throughout.
 # Requires three runs because two reboots are needed:
 #   Run 1  ->  installs features           ->  REBOOT
-#   Run 2  ->  promotes to Domain Controller ->  REBOOT (automatic)
+#   Run 2  ->  promotes to Domain Controller ->  REBOOT (manual -- reboot when ready)
 #   Run 3  ->  configures DNS / IIS / FTP  ->  DONE
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
@@ -158,7 +158,7 @@ if ($ntdsSvc -and $ntdsSvc.Status -eq 'Running') {
     Write-Info "Promoting this server to Domain Controller for forest: $DomainFQDN"
     Write-Info "NetBIOS name : $DomainNetBIOS"
     Write-Info "DSRM password: $DsrmPassword"
-    Write-Warn "The server will reboot AUTOMATICALLY after promotion."
+    Write-Warn "Promotion will NOT auto-reboot -- reboot manually when ready."
     Write-Warn "Re-run this script after the reboot to complete IIS / FTP / DNS setup (Run 3 of 3)."
     Write-Host ""
 
@@ -183,9 +183,10 @@ if ($ntdsSvc -and $ntdsSvc.Status -eq 'Running') {
         -InstallDns:$true `
         -CreateDnsDelegation:$false `
         -SafeModeAdministratorPassword $securePass `
+        -NoRebootOnCompletion:$true `
         -Force:$true
 
-    # Not reached -- Install-ADDSForest triggers an automatic reboot.
+    Write-Warn "AD promotion complete. Reboot this machine now, then re-run this script (Run 3 of 3)."
     exit 0
 }
 
