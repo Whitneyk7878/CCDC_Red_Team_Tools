@@ -1,18 +1,13 @@
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# CCDC Windows Target Setup  -  AD DS, IIS (HTTP), FTP, DNS
+# CCDC Windows Target Setup  -  IIS (HTTP), FTP, DNS
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # Provisions a Windows Server 2019 standalone machine as a scoreable CCDC
 # competition target running:
-#   * AD DS  -  new forest/domain  ccdc.local  (DC + DNS promotion)
 #   * IIS HTTP  -  Default Web Site on port 80
 #   * IIS FTP   -  Anonymous read, port 21, passive 50000-50100
-#   * DNS Server  -  AD-integrated forward zone for ccdc.local
+#   * DNS Server  -  Primary forward zone for ccdc.local
 #
 # Run as Administrator (PowerShell).  Safe to re-run -- idempotent throughout.
-# Requires three runs because two reboots are needed:
-#   Run 1  ->  installs features           ->  REBOOT
-#   Run 2  ->  promotes to Domain Controller ->  REBOOT (manual -- reboot when ready)
-#   Run 3  ->  configures DNS / IIS / FTP  ->  DONE
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
 #Requires -RunAsAdministrator
@@ -29,15 +24,12 @@ function Write-Section { param($m) Write-Host "`n==[ $m ]==" -ForegroundColor Ma
 
 Write-Host ""
 Write-Warn "================================================================"
-Write-Warn " CCDC Windows Target Setup  -  AD DS / HTTP / FTP / DNS"
+Write-Warn " CCDC Windows Target Setup  -  HTTP / FTP / DNS"
 Write-Warn "================================================================"
 Write-Host ""
 
 # -- Configuration -------------------------------------------------------------
 $DnsZoneName   = "ccdc.local"
-$DomainFQDN    = $DnsZoneName      # AD domain matches DNS zone
-$DomainNetBIOS = "CCDC"
-$DsrmPassword  = "CCDC@dmin1!"    # Directory Services Restore Mode password
 $FtpSiteName   = "CCDC-FTP"
 $FtpRoot       = "C:\inetpub\ftproot"
 $FtpPassiveLow = 50000
@@ -51,7 +43,7 @@ $WebSiteName   = "Default Web Site"
 Write-Section "PRE-FLIGHT CHECK"
 
 $HostName = [System.Net.Dns]::GetHostName()
-Write-Info "Hostname : $HostName"
+Write-Info "Hostname  : $HostName"
 
 # Primary IPv4 - follow the default route, fall back to first non-loopback
 try {
@@ -71,8 +63,6 @@ if (-not $HostIP) {
     exit 1
 }
 Write-Info "Primary IP : $HostIP"
-Write-Info "Domain     : $DomainFQDN"
-Write-Info "NetBIOS    : $DomainNetBIOS"
 Write-Host ""
 
 Write-Info "All IPv4 addresses on this machine:"
@@ -84,7 +74,7 @@ Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^1
 Write-Host ""
 
 Write-Info "Current Windows feature state (relevant roles):"
-$checkFeatures = @('AD-Domain-Services','DNS','Web-Server','Web-Ftp-Server','Web-Mgmt-Tools','RSAT-AD-PowerShell')
+$checkFeatures = @('DNS','Web-Server','Web-Ftp-Server','Web-Mgmt-Tools')
 foreach ($f in $checkFeatures) {
     $feat = Get-WindowsFeature -Name $f -ErrorAction SilentlyContinue
     if ($feat) {
@@ -96,7 +86,7 @@ foreach ($f in $checkFeatures) {
 Write-Host ""
 
 Write-Info "Relevant services (current state):"
-foreach ($svc in @('NTDS','DNS','W3SVC','MSFTPSVC')) {
+foreach ($svc in @('DNS','W3SVC','MSFTPSVC')) {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     if ($s) {
         $color = if ($s.Status -eq 'Running') { 'Green' } else { 'Yellow' }
@@ -113,9 +103,6 @@ Write-Host ""
 Write-Section "INSTALL WINDOWS FEATURES"
 
 $featuresToInstall = @(
-    'AD-Domain-Services',       # Active Directory Domain Services role
-    'RSAT-AD-PowerShell',       # AD PowerShell module (Get-ADUser, New-ADUser, etc.)
-    'GPMC',                     # Group Policy Management Console
     'DNS',                      # DNS Server role
     'Web-Server',               # IIS core
     'Web-Common-Http',
@@ -146,50 +133,6 @@ try {
     exit 1
 }
 
-# -----------------------------------------------------------------------------
-# ACTIVE DIRECTORY DOMAIN SERVICES
-# -----------------------------------------------------------------------------
-Write-Section "ACTIVE DIRECTORY DOMAIN SERVICES"
-
-$ntdsSvc = Get-Service -Name 'NTDS' -ErrorAction SilentlyContinue
-if ($ntdsSvc -and $ntdsSvc.Status -eq 'Running') {
-    Write-Success "This server is already a Domain Controller for $DomainFQDN -- skipping promotion."
-} else {
-    Write-Info "Promoting this server to Domain Controller for forest: $DomainFQDN"
-    Write-Info "NetBIOS name : $DomainNetBIOS"
-    Write-Info "DSRM password: $DsrmPassword"
-    Write-Warn "Promotion will NOT auto-reboot -- reboot manually when ready."
-    Write-Warn "Re-run this script after the reboot to complete IIS / FTP / DNS setup (Run 3 of 3)."
-    Write-Host ""
-
-    try {
-        Import-Module ADDSDeployment -ErrorAction Stop
-    } catch {
-        Write-Err "Could not load ADDSDeployment module: $_"
-        Write-Err "Ensure the AD-Domain-Services feature is installed, then reboot and re-run."
-        exit 1
-    }
-
-    $securePass = ConvertTo-SecureString $DsrmPassword -AsPlainText -Force
-
-    Install-ADDSForest `
-        -DomainName                    $DomainFQDN `
-        -DomainNetbiosName             $DomainNetBIOS `
-        -DomainMode                    WinThreshold `
-        -ForestMode                    WinThreshold `
-        -DatabasePath                  'C:\Windows\NTDS' `
-        -SysvolPath                    'C:\Windows\SYSVOL' `
-        -LogPath                       'C:\Windows\NTDS' `
-        -InstallDns:$true `
-        -CreateDnsDelegation:$false `
-        -SafeModeAdministratorPassword $securePass `
-        -NoRebootOnCompletion:$true `
-        -Force:$true
-
-    Write-Warn "AD promotion complete. Reboot this machine now, then re-run this script (Run 3 of 3)."
-    exit 0
-}
-
 # Load the WebAdministration module now that IIS is confirmed installed
 try {
     Import-Module WebAdministration -ErrorAction Stop
@@ -216,17 +159,9 @@ if ($dnsSvc -and $dnsSvc.Status -eq 'Running') {
     exit 1
 }
 
-# After AD promotion, the zone already exists as AD-integrated.
-# If not, create it as file-backed (standalone/no-AD fallback).
 $existingZone = Get-DnsServerZone -Name $DnsZoneName -ErrorAction SilentlyContinue
 if ($existingZone) {
-    $zoneType = $existingZone.ZoneType
-    $adIntegrated = $existingZone.IsAutoCreated -or $existingZone.IsDsIntegrated
-    if ($adIntegrated) {
-        Write-Success "Zone '$DnsZoneName' exists as AD-integrated -- no changes needed."
-    } else {
-        Write-Warn "Zone '$DnsZoneName' exists ($zoneType) -- skipping creation."
-    }
+    Write-Warn "Zone '$DnsZoneName' exists ($($existingZone.ZoneType)) -- skipping creation."
 } else {
     Write-Info "Creating primary zone: $DnsZoneName ..."
     Add-DnsServerPrimaryZone `
@@ -322,7 +257,6 @@ $IndexHtml = @"
     <h1>CCDC Web Server</h1>
     <p>Host: $HostName</p>
     <p>Address: $HostIP</p>
-    <p>Domain: $DomainFQDN</p>
     <span class="badge">HTTP service is running</span>
   </div>
 </body>
@@ -387,7 +321,6 @@ CCDC Competition Target  -  FTP Service
 ======================================
 Host    : $HostName
 Address : $HostIP
-Domain  : $DomainFQDN
 
 This FTP site is a scored competition service.
 Anonymous read access is enabled.
@@ -474,22 +407,13 @@ foreach ($rule in @(
 # -----------------------------------------------------------------------------
 Write-Section "VERIFICATION"
 
-foreach ($svc in @('NTDS','DNS','W3SVC','MSFTPSVC')) {
+foreach ($svc in @('DNS','W3SVC','MSFTPSVC')) {
     $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
     $status = if ($s) { $s.Status } else { 'NOT FOUND' }
     $color  = if ($s -and $s.Status -eq 'Running') { 'Green' } else { 'Red' }
     Write-Host "  $($status.ToString().PadRight(10)) $svc" -ForegroundColor $color
 }
 Write-Host ""
-
-# AD check
-Write-Info "AD domain check..."
-try {
-    $adDomain = Get-ADDomain -ErrorAction Stop
-    Write-Success "Domain: $($adDomain.DNSRoot)  DC: $HostName"
-} catch {
-    Write-Warn "AD domain query failed: $_ (module may not be loaded yet)"
-}
 
 # HTTP local check
 Write-Info "HTTP local check..."
@@ -522,42 +446,41 @@ try {
 
 # -----------------------------------------------------------------------------
 # ROGUE USERS
-# Step 1 always: create local accounts + add to local Administrators.
-# Step 2 optional: if AD is already up (Run 3), also create domain accounts.
-# The ActiveDirectory module is imported manually so a missing module does NOT
-# terminate the session (unlike #Requires -Modules ActiveDirectory).
+# Tier A: Administrators
+# Tier B: Administrators + Remote Desktop Users
+# Tier C: Backup Operators + Remote Desktop Users
+# All accounts hidden from the login screen via SpecialAccounts\UserList.
 # -----------------------------------------------------------------------------
 Write-Section "ROGUE USERS"
 
 $RogueUsers = @(
-    [PSCustomObject]@{
-        Sam         = "JohnRedTeam"
-        DisplayName = "John"
-        Password    = "S1llyEv1l@2024!"
-        Description = "FUCK DONT KILL ME"
-    },
-    [PSCustomObject]@{
-        Sam         = "AdobeAcrobat"
-        DisplayName = "AdobeAcrobat"
-        Password    = "R3m0veM3@2024!"
-        Description = "Service Account"
-    },
-    [PSCustomObject]@{
-        Sam         = "KayneWhitney"
-        DisplayName = "Kayne"
-        Password    = "F@keUs3r@2024!"
-        Description = "Exchange migration service account"
-    }
+    [PSCustomObject]@{ Sam = "svc_iisapppool";  DisplayName = "IIS AppPool Svc";  Password = "IIS@Svc2024!";    Description = "IIS application pool identity";                    Tier = "A" },
+    [PSCustomObject]@{ Sam = "svc_backup";      DisplayName = "Backup Service";   Password = "Bkp@Svc2024!";    Description = "Scheduled backup task service account";            Tier = "A" },
+    [PSCustomObject]@{ Sam = "SolarWindsAgent"; DisplayName = "SolarWinds";       Password = "SW0rion@2024!";   Description = "SolarWinds Orion agent (do not disable)";          Tier = "A" },
+    [PSCustomObject]@{ Sam = "CrowdStrikeCS";   DisplayName = "CrowdStrike";      Password = "Cs@Falc0n2024!";  Description = "CrowdStrike Falcon sensor service account";         Tier = "A" },
+    [PSCustomObject]@{ Sam = "KayneWhitney";    DisplayName = "Kayne Whitney";    Password = "F@keUs3r@2024!";  Description = "Exchange migration service account";                Tier = "A" },
+    [PSCustomObject]@{ Sam = "svc_monitoring";  DisplayName = "Monitoring Svc";   Password = "M0n!tor2024@";    Description = "Infrastructure health monitor";                    Tier = "B" },
+    [PSCustomObject]@{ Sam = "helpdesk_admin";  DisplayName = "Help Desk";        Password = "H3lpD3sk@2024!";  Description = "Tier-2 helpdesk elevated access account";          Tier = "B" },
+    [PSCustomObject]@{ Sam = "NessusScanner";   DisplayName = "Nessus Agent";     Password = "N3ssus@Sc4n24!";  Description = "Tenable Nessus vulnerability scanner agent";       Tier = "B" },
+    [PSCustomObject]@{ Sam = "SplunkForwarder"; DisplayName = "Splunk Fwd";       Password = "Spl@Fwd2024!";   Description = "Splunk universal forwarder service account";        Tier = "B" },
+    [PSCustomObject]@{ Sam = "wsus_svc";        DisplayName = "WSUS Service";     Password = "Wsus@Upd2024!";   Description = "Windows Server Update Services account";           Tier = "C" },
+    [PSCustomObject]@{ Sam = "OneDriveSync";    DisplayName = "OneDrive Sync";    Password = "0ne@Drv2024!";    Description = "OneDrive for Business sync agent";                 Tier = "C" },
+    [PSCustomObject]@{ Sam = "net_probe";       DisplayName = "Network Probe";    Password = "N3t@Pr0be2024!";  Description = "Network connectivity probe (IT Ops)";              Tier = "C" },
+    [PSCustomObject]@{ Sam = "DefaultUser0";    DisplayName = "Default User";     Password = "Def@Usr2024!";    Description = "Default user profile (do not remove)";             Tier = "C" }
 )
 
-# -- Local users (always) ------------------------------------------------------
+$SpecialAccountsPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+if (-not (Test-Path $SpecialAccountsPath)) {
+    New-Item -Path $SpecialAccountsPath -Force | Out-Null
+}
+
 Write-Info "Creating local rogue users..."
 foreach ($u in $RogueUsers) {
     $SecurePass = ConvertTo-SecureString $u.Password -AsPlainText -Force
 
     $existingLocal = Get-LocalUser -Name $u.Sam -ErrorAction SilentlyContinue
     if ($existingLocal) {
-        Write-Warn "  Local user '$($u.Sam)' already exists  -  skipping creation."
+        Write-Warn "  '$($u.Sam)' already exists -- skipping creation."
     } else {
         try {
             New-LocalUser `
@@ -567,99 +490,43 @@ foreach ($u in $RogueUsers) {
                 -Description          $u.Description `
                 -PasswordNeverExpires:$true `
                 -ErrorAction          Stop
-            Write-Success "  Local user created : $($u.Sam)  pass: $($u.Password)"
+            Write-Success "  Created : $($u.Sam)  pass: $($u.Password)"
         } catch {
-            Write-Warn "  Could not create local user '$($u.Sam)': $_"
+            Write-Warn "  Could not create '$($u.Sam)': $_"
         }
     }
 
-    try {
-        Add-LocalGroupMember -Group "Administrators" -Member $u.Sam -ErrorAction Stop
-        Write-Success "  Added to local Administrators."
-    } catch {
-        if ($_ -match "already a member") {
-            Write-Warn "  '$($u.Sam)' already in local Administrators."
-        } else {
-            Write-Warn "  Could not add '$($u.Sam)' to local Administrators: $_"
-        }
+    $groups = switch ($u.Tier) {
+        "A" { @("Administrators") }
+        "B" { @("Administrators", "Remote Desktop Users") }
+        "C" { @("Backup Operators", "Remote Desktop Users") }
     }
-}
-
-# -- AD users (optional — only if NTDS is running and AD module is present) ----
-$rogueAdDone = $false
-$ntdsSvcCheck = Get-Service -Name 'NTDS' -ErrorAction SilentlyContinue
-if ($ntdsSvcCheck -and $ntdsSvcCheck.Status -eq 'Running') {
-    try {
-        Import-Module ActiveDirectory -ErrorAction Stop
-        $rogueAdDomain   = Get-ADDomain -ErrorAction Stop
-        $rogueAdDN       = $rogueAdDomain.DistinguishedName
-        $rogueAdDnsRoot  = $rogueAdDomain.DNSRoot
-        Write-Info "AD domain available: $rogueAdDnsRoot  -  creating domain accounts..."
-
-        $rogueAdGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
-        foreach ($u in $RogueUsers) {
-            $SecurePass = ConvertTo-SecureString $u.Password -AsPlainText -Force
-            $UPN        = "$($u.Sam)@$rogueAdDnsRoot"
-
-            $existingAd = Get-ADUser -Filter "SamAccountName -eq '$($u.Sam)'" -ErrorAction SilentlyContinue
-            if ($existingAd) {
-                Write-Warn "  AD user '$($u.Sam)' already exists."
+    foreach ($group in $groups) {
+        try {
+            Add-LocalGroupMember -Group $group -Member $u.Sam -ErrorAction Stop
+            Write-Success "  Group   : $group"
+        } catch {
+            if ($_ -match "already a member") {
+                Write-Warn "  Already in $group."
             } else {
-                try {
-                    New-ADUser `
-                        -SamAccountName       $u.Sam `
-                        -UserPrincipalName    $UPN `
-                        -Name                 $u.DisplayName `
-                        -DisplayName          $u.DisplayName `
-                        -GivenName            $u.Sam `
-                        -Surname              "Training" `
-                        -Description          $u.Description `
-                        -Path                 "CN=Users,$rogueAdDN" `
-                        -AccountPassword      $SecurePass `
-                        -Enabled              $true `
-                        -PasswordNeverExpires $true `
-                        -CannotChangePassword $false `
-                        -ErrorAction          Stop
-                    Write-Success "  AD user created : $($u.Sam)  UPN: $UPN"
-                } catch {
-                    Write-Warn "  Could not create AD user '$($u.Sam)': $_"
-                    continue
-                }
-            }
-
-            foreach ($group in $rogueAdGroups) {
-                try {
-                    Add-ADGroupMember -Identity $group -Members $u.Sam -ErrorAction Stop
-                    Write-Success "  Added to $group"
-                } catch {
-                    if ($group -eq "Enterprise Admins") {
-                        Write-Warn "  Could not add to '$group' (forest root only): $_"
-                    } else {
-                        Write-Warn "  Could not add '$($u.Sam)' to '$group': $_"
-                    }
-                }
-            }
-
-            try {
-                Set-ADUser -Identity $u.Sam -Replace @{adminCount = 1} -ErrorAction Stop
-                Write-Success "  adminCount=1 set (SDProp bypass)."
-            } catch {
-                Write-Warn "  Could not set adminCount for '$($u.Sam)': $_"
+                Write-Warn "  Could not add to '$group': $_"
             }
         }
-        $rogueAdDone = $true
-    } catch {
-        Write-Warn "AD module or domain query failed  -  local users only: $_"
     }
-} else {
-    Write-Warn "NTDS not running  -  skipping AD user creation (local users created above)."
+
+    try {
+        New-ItemProperty -Path $SpecialAccountsPath -Name $u.Sam -Value 0 -PropertyType DWORD -Force | Out-Null
+        Write-Success "  Hidden  : login screen suppressed"
+    } catch {
+        Write-Warn "  Could not set SpecialAccounts key for '$($u.Sam)': $_"
+    }
 }
 
 Write-Host ""
 Write-Info "Rogue user summary:"
 foreach ($u in $RogueUsers) {
-    Write-Host "  $($u.Sam.PadRight(20)) local admin" -ForegroundColor Green -NoNewline
-    if ($rogueAdDone) { Write-Host " + AD Domain Admin" -ForegroundColor Green } else { Write-Host "" }
+    $groupLabel = switch ($u.Tier) { "A" { "Administrators" } "B" { "Administrators + RDP" } "C" { "Backup Operators + RDP" } }
+    Write-Host ("  {0,-20} Tier {1}  {2}" -f $u.Sam, $u.Tier, $groupLabel) -ForegroundColor Green
 }
 Write-Host ""
 
@@ -669,12 +536,6 @@ Write-Host ""
 Write-Section "SETUP COMPLETE"
 Write-Host ""
 Write-Host "  Machine    : $HostName  ($HostIP)" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  Active Directory" -ForegroundColor Yellow
-Write-Host "    Domain   : $DomainFQDN"
-Write-Host "    NetBIOS  : $DomainNetBIOS"
-Write-Host "    DC       : $HostName"
-Write-Host "    DSRM pw  : $DsrmPassword"
 Write-Host ""
 Write-Host "  HTTP" -ForegroundColor Yellow
 Write-Host "    URL      : http://$HostIP"
@@ -688,11 +549,10 @@ Write-Host "    Auth     : anonymous (read only)"
 Write-Host "    Passive  : $FtpPassiveLow - $FtpPassiveHigh"
 Write-Host ""
 Write-Host "  DNS" -ForegroundColor Yellow
-Write-Host "    Zone     : $DnsZoneName (AD-integrated after promotion)"
+Write-Host "    Zone     : $DnsZoneName"
 Write-Host "    A record : $HostName.$DnsZoneName -> $HostIP"
 Write-Host "    Server   : $HostIP port 53"
 Write-Host ""
 Write-Warn "Point DNS clients at $HostIP to resolve $DnsZoneName queries."
-Write-Warn "Join domain with: Add-Computer -DomainName $DomainFQDN -Credential $DomainNetBIOS\Administrator"
 Write-Warn "Verify scoring checks reach the machine on ports 21, 53, and 80."
 Write-Host ""
