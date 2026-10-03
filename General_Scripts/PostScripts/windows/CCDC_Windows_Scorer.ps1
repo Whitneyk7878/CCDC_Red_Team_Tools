@@ -1,12 +1,13 @@
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # CCDC Windows Target Scorer
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# Grades the DEFENDER (blue team) across 4 categories. Higher = better defense.
-#   1. Scored Services      (100) - scored services still running
-#   2. Persistence Removed  (100) - planted persistence found and cleaned
-#   3. Rogue Users Removed  (100) - backdoor AD accounts found and deleted
-#   4. Rogue Web Removed    (100) - rogue IIS site found and torn down
-# Total: /400
+# Grades the DEFENDER (blue team) across 5 categories. Higher = better defense.
+#   1. Scored Services        (100) - scored services still running
+#   2. Persistence Removed    (100) - planted persistence found and cleaned
+#   3. Rogue Users Removed    (100) - backdoor local accounts found and deleted
+#   4. Rogue Web Removed      (100) - rogue IIS site found and torn down
+#   5. Remote Access Hardened (100) - remote-access misconfigs reversed
+# Total: /500
 #
 # Run: .\CCDC_Windows_Scorer.ps1  (requires Administrator)
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -18,6 +19,7 @@ $script:S1 = 0
 $script:S2 = 0
 $script:S3 = 0
 $script:S4 = 0
+$script:S5 = 0
 
 # -- Output helpers -----------------------------------------------------------
 function Write-Section { param([string]$t)
@@ -45,6 +47,7 @@ function Check {
             'S2' { $script:S2 += $Pts }
             'S3' { $script:S3 += $Pts }
             'S4' { $script:S4 += $Pts }
+            'S5' { $script:S5 += $Pts }
         }
     } else {
         Write-Host ("[FAIL  +{0,2}] {1}" -f 0, $Label) -ForegroundColor Red
@@ -66,15 +69,6 @@ try {
     Write-Host "[+] WebAdministration module loaded." -ForegroundColor Green
 } catch {
     Write-Host "[!] WebAdministration not available - IIS checks score 0." -ForegroundColor Yellow
-}
-
-$ADAvailable = $false
-try {
-    Import-Module ActiveDirectory -ErrorAction Stop
-    $ADAvailable = $true
-    Write-Host "[+] ActiveDirectory module loaded." -ForegroundColor Green
-} catch {
-    Write-Host "[!] ActiveDirectory not available - user checks use local group fallback." -ForegroundColor Yellow
 }
 
 # =============================================================================
@@ -197,78 +191,59 @@ Check 'S2' 'Hidden task "DiagnosticsHub-StandardCollector" removed' $task3Gone 1
 $fakeSvcGone = $null -eq (Get-Service -Name 'WmiPrvSE-Helper' -ErrorAction SilentlyContinue)
 Check 'S2' 'Service "WmiPrvSE-Helper" removed' $fakeSvcGone 10
 
+# Hidden task MusNotifyIconHandler gone - 5 pts
+$task4Gone = $true
+try {
+    Get-ScheduledTask -TaskName 'MusNotifyIconHandler' `
+        -TaskPath '\Microsoft\Windows\UpdateOrchestrator\' -ErrorAction Stop | Out-Null
+    $task4Gone = $false
+} catch {}
+Check 'S2' 'Hidden task "MusNotifyIconHandler" (UpdateOrchestrator) removed' $task4Gone 5
+
+# Hidden task OfficeBackgroundTaskHandlerRegistration gone - 5 pts
+$task5Gone = $true
+try {
+    Get-ScheduledTask -TaskName 'OfficeBackgroundTaskHandlerRegistration' `
+        -TaskPath '\Microsoft\Windows\OfficeData\' -ErrorAction Stop | Out-Null
+    $task5Gone = $false
+} catch {}
+Check 'S2' 'Hidden task "OfficeBackgroundTaskHandlerRegistration" (OfficeData) removed' $task5Gone 5
+
 # Drop directory gone - 3 pts
 Check 'S2' 'Payload drop directory removed' (-not (Test-Path $DropDir)) 3
 
-# Each payload file gone - 5 pts each
+# Each payload file gone - 3 pts each
 foreach ($f in @('wudf-host-svc.ps1', 'userinit-ext.ps1', 'diaghub-collector.ps1',
                   'wmiprvse-helper.ps1', 'iecompat-stub.ps1')) {
-    Check 'S2' "Payload file `"$f`" removed" (-not (Test-Path "$DropDir\$f")) 5
+    Check 'S2' "Payload file `"$f`" removed" (-not (Test-Path "$DropDir\$f")) 3
 }
 
 Write-Subtotal $script:S2 100
 
 # =============================================================================
 # CATEGORY 3 - ROGUE USERS REMOVED (100 pts)
-# Blue team gets points for each backdoor AD account that is GONE.
-# Requires ActiveDirectory module; degrades to local group check without it.
+# Blue team gets points for each backdoor local account that is GONE.
+# These are local accounts (not AD) planted by CCDC_Windows_Users_UsersAreInYourWalls.ps1.
+# Scoring: 7 pts per user removed (13 x 7 = 91) + 9 pt all-gone bonus = 100 pts
 # =============================================================================
 Write-Section "CATEGORY 3 - ROGUE USERS REMOVED (100 pts)"
 
-$RogueUsers = @('JohnRedTeam', 'AdobeAcrobat', 'KayneWhitney')
+$RogueUsers = @(
+    'svc_iisapppool', 'svc_backup', 'SolarWindsAgent', 'CrowdStrikeCS', 'KayneWhitney',
+    'svc_monitoring', 'helpdesk_admin', 'NessusScanner', 'SplunkForwarder',
+    'wsus_svc', 'OneDriveSync', 'net_probe', 'DefaultUser0'
+)
 
-if ($ADAvailable) {
-    $daGroup  = Get-ADGroup 'Domain Admins'    -ErrorAction SilentlyContinue
-    $admGroup = Get-ADGroup 'Administrators'   -ErrorAction SilentlyContinue
-    $eaGroup  = Get-ADGroup 'Enterprise Admins' -ErrorAction SilentlyContinue
-    $allEAClean = $true
-
-    foreach ($u in $RogueUsers) {
-        $adUser = Get-ADUser -Identity $u -Properties adminCount, MemberOf -ErrorAction SilentlyContinue
-
-        # Account gone - 10 pts
-        Check 'S3' "AD user `"$u`" removed" ($null -eq $adUser) 10
-
-        if ($null -ne $adUser) {
-            # Still in Domain Admins - deducted by awarding 0
-            $inDA = $daGroup -and ($adUser.MemberOf -contains $daGroup.DistinguishedName)
-            Check 'S3' "`"$u`" removed from Domain Admins" (-not $inDA) 10
-
-            $inAdm = $admGroup -and ($adUser.MemberOf -contains $admGroup.DistinguishedName)
-            Check 'S3' "`"$u`" removed from Administrators" (-not $inAdm) 10
-
-            Check 'S3' "`"$u`" adminCount reset (no longer 1)" ($adUser.adminCount -ne 1) 3
-
-            if ($eaGroup -and ($adUser.MemberOf -contains $eaGroup.DistinguishedName)) {
-                $allEAClean = $false
-            }
-        } else {
-            # Account gone entirely - full credit for sub-checks
-            Write-Host ("[PASS +{0,2}] `"$u`" removed from Domain Admins (account gone)" -f 10) -ForegroundColor Green
-            $script:S3 += 10
-            Write-Host ("[PASS +{0,2}] `"$u`" removed from Administrators (account gone)" -f 10) -ForegroundColor Green
-            $script:S3 += 10
-            Write-Host ("[PASS +{0,2}] `"$u`" adminCount reset (account gone)" -f 3) -ForegroundColor Green
-            $script:S3 += 3
-        }
-    }
-
-    # No rogue user in Enterprise Admins - 1 pt
-    Check 'S3' 'No rogue user remains in Enterprise Admins' $allEAClean 1
-
-} else {
-    Write-Host "  [DEGRADED] Checking local Administrators group only (AD module unavailable)" -ForegroundColor Yellow
-    Write-Host ""
-    $localAdmins = & net localgroup Administrators 2>$null | Out-String
-    $allClean = $true
-    foreach ($u in $RogueUsers) {
-        $stillPresent = ($localAdmins -match [regex]::Escape($u))
-        if ($stillPresent) { $allClean = $false }
-        Check 'S3' "`"$u`" not in local Administrators (degraded)" (-not $stillPresent) 33
-    }
-    # 1-pt bonus to reach the 100-pt category ceiling (3 users x 33 = 99)
-    Check 'S3' 'All rogue users absent from local Administrators (degraded bonus)' $allClean 1
+$allGone = $true
+foreach ($u in $RogueUsers) {
+    $localUser = Get-LocalUser -Name $u -ErrorAction SilentlyContinue
+    $gone = ($null -eq $localUser)
+    if (-not $gone) { $allGone = $false }
+    Check 'S3' "Local user `"$u`" removed" $gone 7
 }
+
+# 9 pt clean-sweep bonus
+Check 'S3' 'All 13 rogue local users removed (clean sweep bonus)' $allGone 9
 
 Write-Subtotal $script:S3 100
 
@@ -319,9 +294,84 @@ Check 'S4' 'TCP port 777 no longer accepts connections' $port777Closed 15
 Write-Subtotal $script:S4 100
 
 # =============================================================================
+# CATEGORY 5 – REMOTE ACCESS HARDENED (100 pts)
+# Blue team gets points for reversing misconfigs planted by
+# CCDC_Windows_RemoteAccess_OpenDoorPolicy.ps1
+# =============================================================================
+Write-Section "CATEGORY 5 - REMOTE ACCESS HARDENED (100 pts)"
+
+# RDP NLA re-enabled (UserAuthentication = 1) - 15 pts
+$rdpNla = $false
+try {
+    $uaVal = (Get-ItemProperty `
+        -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+        -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication
+    $rdpNla = ($uaVal -eq 1)
+} catch {}
+Check 'S5' 'RDP NLA (Network Level Authentication) re-enabled (UserAuthentication = 1)' $rdpNla 15
+
+# RDP blank-password logins blocked (LimitBlankPasswordUse = 1) - 10 pts
+$blankPwBlocked = $false
+try {
+    $bpVal = (Get-ItemProperty `
+        -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' `
+        -Name 'LimitBlankPasswordUse' -ErrorAction Stop).LimitBlankPasswordUse
+    $blankPwBlocked = ($bpVal -eq 1)
+} catch {}
+Check 'S5' 'RDP blank-password logins blocked (LimitBlankPasswordUse = 1)' $blankPwBlocked 10
+
+# WinRM basic authentication disabled - 15 pts
+$winrmBasicOff = $false
+try {
+    $basicVal = (Get-Item 'WSMan:\localhost\Service\Auth\Basic' -ErrorAction Stop).Value
+    $winrmBasicOff = ($basicVal -ieq 'false')
+} catch {}
+Check 'S5' 'WinRM basic authentication disabled' $winrmBasicOff 15
+
+# SSH PermitRootLogin not "yes" - 20 pts
+$sshdConf = "$env:ProgramData\ssh\sshd_config"
+$sshNoRoot = $true
+if (Test-Path $sshdConf) {
+    $sshContent = Get-Content $sshdConf -Raw -ErrorAction SilentlyContinue
+    if ($sshContent -match '(?im)^\s*PermitRootLogin\s+yes\s*$') { $sshNoRoot = $false }
+}
+Check 'S5' 'SSH sshd_config: PermitRootLogin is not "yes"' $sshNoRoot 20
+
+# SSH PermitEmptyPasswords not "yes" - 15 pts
+$sshNoEmpty = $true
+if (Test-Path $sshdConf) {
+    if (-not $sshContent) {
+        $sshContent = Get-Content $sshdConf -Raw -ErrorAction SilentlyContinue
+    }
+    if ($sshContent -match '(?im)^\s*PermitEmptyPasswords\s+yes\s*$') { $sshNoEmpty = $false }
+}
+Check 'S5' 'SSH sshd_config: PermitEmptyPasswords is not "yes"' $sshNoEmpty 15
+
+# Telnet service (TlntSvr) stopped or not installed - 15 pts
+$telnetSafe = $true
+$telnetSvc = Get-Service -Name 'TlntSvr' -ErrorAction SilentlyContinue
+if ($null -ne $telnetSvc -and $telnetSvc.Status -eq 'Running') { $telnetSafe = $false }
+Check 'S5' 'Telnet service (TlntSvr) stopped or not installed' $telnetSafe 15
+
+# SNMP communities not write-enabled (ValidCommunities value < 8) - 10 pts
+$snmpClean = $true
+$snmpPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\SNMP\Parameters\ValidCommunities'
+if (Test-Path $snmpPath) {
+    $communities = Get-ItemProperty -Path $snmpPath -ErrorAction SilentlyContinue
+    foreach ($prop in $communities.PSObject.Properties) {
+        if ($prop.Name -notmatch '^PS') {
+            if ([int]$prop.Value -ge 8) { $snmpClean = $false; break }
+        }
+    }
+}
+Check 'S5' 'SNMP ValidCommunities: no write-enabled community (value >= 8 means write)' $snmpClean 10
+
+Write-Subtotal $script:S5 100
+
+# =============================================================================
 # SUMMARY TABLE
 # =============================================================================
-$total = $script:S1 + $script:S2 + $script:S3 + $script:S4
+$total = $script:S1 + $script:S2 + $script:S3 + $script:S4 + $script:S5
 
 function ScoreColor {
     param([int]$s)
@@ -332,15 +382,17 @@ Write-Host ""
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "  CCDC WINDOWS DEFENDER SCORE" -ForegroundColor Cyan
 Write-Host "========================================================" -ForegroundColor Cyan
-Write-Host ("  Scored Services       : {0,3} / 100" -f $script:S1) `
+Write-Host ("  Scored Services         : {0,3} / 100" -f $script:S1) `
     -ForegroundColor (ScoreColor $script:S1)
-Write-Host ("  Persistence Removed   : {0,3} / 100" -f $script:S2) `
+Write-Host ("  Persistence Removed     : {0,3} / 100" -f $script:S2) `
     -ForegroundColor (ScoreColor $script:S2)
-Write-Host ("  Rogue Users Removed   : {0,3} / 100" -f $script:S3) `
+Write-Host ("  Rogue Users Removed     : {0,3} / 100" -f $script:S3) `
     -ForegroundColor (ScoreColor $script:S3)
-Write-Host ("  Rogue Web Removed     : {0,3} / 100" -f $script:S4) `
+Write-Host ("  Rogue Web Removed       : {0,3} / 100" -f $script:S4) `
     -ForegroundColor (ScoreColor $script:S4)
+Write-Host ("  Remote Access Hardened  : {0,3} / 100" -f $script:S5) `
+    -ForegroundColor (ScoreColor $script:S5)
 Write-Host "--------------------------------------------------------" -ForegroundColor Cyan
-Write-Host ("  TOTAL                 : {0,3} / 400" -f $total) -ForegroundColor White
+Write-Host ("  TOTAL                   : {0,3} / 500" -f $total) -ForegroundColor White
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host ""

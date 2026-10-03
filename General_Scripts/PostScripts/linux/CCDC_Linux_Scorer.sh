@@ -146,20 +146,20 @@ subtotal "$S1" 100
 section "CATEGORY 2 – PERSISTENCE REMOVED (100 pts)"
 
 # -- Cron jobs (ImGonnaCron) --------------------------------------------------
-check S2  8 "/etc/cron.d/grub-service removed (5-min service killer)" \
-    "$(file_gone /etc/cron.d/grub-service)" \
-    "cat /etc/cron.d/grub-service  →  rm /etc/cron.d/grub-service"
+check S2  8 "/etc/cron.d/fwupd-notify removed (5-min service killer)" \
+    "$(file_gone /etc/cron.d/fwupd-notify)" \
+    "cat /etc/cron.d/fwupd-notify  →  rm /etc/cron.d/fwupd-notify"
 
-check S2  8 "/etc/cron.d/sillyevilcronjob removed (3-min service killer)" \
-    "$(file_gone /etc/cron.d/sillyevilcronjob)" \
-    "cat /etc/cron.d/sillyevilcronjob  →  rm /etc/cron.d/sillyevilcronjob"
+check S2  8 "/etc/cron.d/apt-daily-compat removed (3-min service killer)" \
+    "$(file_gone /etc/cron.d/apt-daily-compat)" \
+    "cat /etc/cron.d/apt-daily-compat  →  rm /etc/cron.d/apt-daily-compat"
 
 # -- Persistence location 1: rc.local (PlantsVsZerodays) ---------------------
 check S2  7 '/etc/rc.local no longer contains "sysinit-helper"' \
     "$(file_no_str /etc/rc.local 'sysinit-helper')" \
     "cat /etc/rc.local  →  remove the sysinit-helper line; restore original rc.local"
 
-check S2  2 "/usr/local/lib/.sysinit-helper payload removed" \
+check S2  1 "/usr/local/lib/.sysinit-helper payload removed" \
     "$(file_gone /usr/local/lib/.sysinit-helper)" \
     "ls -la /usr/local/lib/.sysinit-helper  →  rm /usr/local/lib/.sysinit-helper"
 
@@ -168,7 +168,7 @@ check S2  6 "/etc/profile.d/99-sysenv-init.sh removed" \
     "$(file_gone /etc/profile.d/99-sysenv-init.sh)" \
     "cat /etc/profile.d/99-sysenv-init.sh  →  rm /etc/profile.d/99-sysenv-init.sh"
 
-check S2  2 "/usr/local/lib/.sysenv-init payload removed" \
+check S2  1 "/usr/local/lib/.sysenv-init payload removed" \
     "$(file_gone /usr/local/lib/.sysenv-init)" \
     "ls /usr/local/lib/.sysenv-init  →  rm /usr/local/lib/.sysenv-init"
 
@@ -182,7 +182,7 @@ systemctl is-enabled --quiet sys-khelper-init.service 2>/dev/null && KHELPER_DIS
 check S2  3 "sys-khelper-init.service disabled/removed" "$KHELPER_DISABLED" \
     "systemctl is-enabled sys-khelper-init  →  systemctl disable sys-khelper-init"
 
-check S2  2 "/usr/local/lib/.khelper-init payload removed" \
+check S2  1 "/usr/local/lib/.khelper-init payload removed" \
     "$(file_gone /usr/local/lib/.khelper-init)" \
     "ls /usr/local/lib/.khelper-init  →  rm /usr/local/lib/.khelper-init"
 
@@ -191,7 +191,7 @@ check S2  3 "/etc/cron.d/syslogd-helper removed (@reboot persistence)" \
     "$(file_gone /etc/cron.d/syslogd-helper)" \
     "cat /etc/cron.d/syslogd-helper  →  rm /etc/cron.d/syslogd-helper"
 
-check S2  2 "/usr/local/lib/.syslogd-helper payload removed" \
+check S2  1 "/usr/local/lib/.syslogd-helper payload removed" \
     "$(file_gone /usr/local/lib/.syslogd-helper)" \
     "ls /usr/local/lib/.syslogd-helper  →  rm /usr/local/lib/.syslogd-helper"
 
@@ -200,47 +200,47 @@ check S2  7 '/root/.bashrc no longer contains "__sysnet_diag_hook__"' \
     "$(file_no_str /root/.bashrc '__sysnet_diag_hook__')" \
     "grep -n '__sysnet_diag_hook__' /root/.bashrc  →  remove the injected block from /root/.bashrc"
 
-check S2  2 "/usr/local/lib/.sysnet-diag payload removed" \
+check S2  1 "/usr/local/lib/.sysnet-diag payload removed" \
     "$(file_gone /usr/local/lib/.sysnet-diag)" \
     "ls /usr/local/lib/.sysnet-diag  →  rm /usr/local/lib/.sysnet-diag"
 
 # -- Rogue web shell service (OopsAllWebShells) --------------------------------
-SILLYEVIL_GONE=1
-[[ -e "/etc/systemd/system/sillyevilservice.service" ]] && SILLYEVIL_GONE=0
-systemctl is-active --quiet sillyevilservice 2>/dev/null && SILLYEVIL_GONE=0
-check S2  8 "sillyevilservice (rogue PHP web shell) service stopped and unit removed" \
-    "$SILLYEVIL_GONE" \
-    "systemctl status sillyevilservice  →  systemctl disable --now sillyevilservice; rm /etc/systemd/system/sillyevilservice.service; systemctl daemon-reload"
+PHPSHELL_GONE=1
+[[ -e "/etc/systemd/system/php-session-mgr.service" ]] && PHPSHELL_GONE=0
+systemctl is-active --quiet php-session-mgr 2>/dev/null && PHPSHELL_GONE=0
+check S2  8 "php-session-mgr (rogue PHP web shell on port 8743) service stopped and unit removed" \
+    "$PHPSHELL_GONE" \
+    "systemctl status php-session-mgr  →  systemctl disable --now php-session-mgr; rm /etc/systemd/system/php-session-mgr.service; systemctl daemon-reload"
 
-check S2  3 "/opt/sillyevilservice/www/index.php removed" \
-    "$(file_gone /opt/sillyevilservice/www/index.php)" \
-    "ls /opt/sillyevilservice/  →  rm -rf /opt/sillyevilservice"
+check S2  3 "/opt/php-session-mgr/www/index.php removed" \
+    "$(file_gone /opt/php-session-mgr/www/index.php)" \
+    "ls /opt/php-session-mgr/  →  rm -rf /opt/php-session-mgr"
 
-check S2  4 "/opt/sillyevilservice directory removed" \
-    "$(dir_gone /opt/sillyevilservice)" \
-    "ls -la /opt/sillyevilservice  →  rm -rf /opt/sillyevilservice"
+check S2  4 "/opt/php-session-mgr directory removed" \
+    "$(dir_gone /opt/php-session-mgr)" \
+    "ls -la /opt/php-session-mgr  →  rm -rf /opt/php-session-mgr"
 
 # -- BeeMovie (OopsAllBees) ---------------------------------------------------
 PIPEWIRE_TIMER_GONE=1
 [[ -e "/etc/systemd/system/systemd-pipewire-multithread-runner.timer" ]] && PIPEWIRE_TIMER_GONE=0
 systemctl is-active --quiet systemd-pipewire-multithread-runner.timer 2>/dev/null && PIPEWIRE_TIMER_GONE=0
-check S2  5 "systemd-pipewire-multithread-runner.timer stopped and unit removed" \
+check S2  4 "systemd-pipewire-multithread-runner.timer stopped and unit removed" \
     "$PIPEWIRE_TIMER_GONE" \
     "systemctl status systemd-pipewire-multithread-runner.timer  →  systemctl disable --now systemd-pipewire-multithread-runner.timer; rm /etc/systemd/system/systemd-pipewire-multithread-runner.timer"
 
-check S2  3 "/etc/systemd/system/systemd-pipewire-multithread-runner.service unit file removed" \
+check S2  2 "/etc/systemd/system/systemd-pipewire-multithread-runner.service unit file removed" \
     "$(file_gone /etc/systemd/system/systemd-pipewire-multithread-runner.service)" \
     "ls /etc/systemd/system/systemd-pipewire-multithread-runner.service  →  rm it; systemctl daemon-reload"
 
-check S2  5 "/etc/profile.d/99-pipewire-session-env.sh (Bee Movie PROMPT_COMMAND hook) removed" \
+check S2  4 "/etc/profile.d/99-pipewire-session-env.sh (Bee Movie PROMPT_COMMAND hook) removed" \
     "$(file_gone /etc/profile.d/99-pipewire-session-env.sh)" \
     "cat /etc/profile.d/99-pipewire-session-env.sh  →  rm /etc/profile.d/99-pipewire-session-env.sh"
 
-check S2  3 "/usr/local/lib/systemd-pipewire-multithread-runner/ enforcer directory removed" \
+check S2  2 "/usr/local/lib/systemd-pipewire-multithread-runner/ enforcer directory removed" \
     "$(dir_gone /usr/local/lib/systemd-pipewire-multithread-runner)" \
     "ls /usr/local/lib/systemd-pipewire-multithread-runner/  →  rm -rf /usr/local/lib/systemd-pipewire-multithread-runner"
 
-check S2  3 '/etc/bash.bashrc no longer sources 99-pipewire-session-env.sh' \
+check S2  2 '/etc/bash.bashrc no longer sources 99-pipewire-session-env.sh' \
     "$(file_no_str /etc/bash.bashrc '99-pipewire-session-env.sh')" \
     "grep -n 'pipewire-session-env' /etc/bash.bashrc  →  remove that source line from /etc/bash.bashrc"
 
@@ -248,13 +248,37 @@ check S2  3 '/etc/bash.bashrc no longer sources 99-pipewire-session-env.sh' \
 ATD_CLEAN=1
 systemctl is-active --quiet atd 2>/dev/null && ATD_CLEAN=0
 pgrep -x atd &>/dev/null && ATD_CLEAN=0
-check S2  5 "atd (at daemon) service stopped — no self-rescheduling at jobs" \
+check S2  4 "atd (at daemon) service stopped — no self-rescheduling at jobs" \
     "$ATD_CLEAN" \
     "systemctl is-active atd; atq  →  atrm \$(atq | awk '{print \$1}'); systemctl disable --now atd"
 
-check S2  3 "/usr/local/lib/systemd-compat-helper.sh (ATD payload) removed" \
+check S2  2 "/usr/local/lib/systemd-compat-helper.sh (ATD payload) removed" \
     "$(file_gone /usr/local/lib/systemd-compat-helper.sh)" \
     "ls /usr/local/lib/systemd-compat-helper.sh  →  rm /usr/local/lib/systemd-compat-helper.sh"
+
+# -- PlantsVsZerodays — extra interval/network persistence locations ----------
+check S2  3 "/etc/cron.d/systemd-journal-sync removed (30-min interval payload cron)" \
+    "$(file_gone /etc/cron.d/systemd-journal-sync)" \
+    "cat /etc/cron.d/systemd-journal-sync  →  rm /etc/cron.d/systemd-journal-sync"
+
+JFLUSHER_TIMER_GONE=1
+[[ -e "/etc/systemd/system/sys-journal-flusher.timer" ]] && JFLUSHER_TIMER_GONE=0
+systemctl is-active --quiet sys-journal-flusher.timer 2>/dev/null && JFLUSHER_TIMER_GONE=0
+check S2  3 "sys-journal-flusher.timer (30-min payload timer) stopped and unit removed" \
+    "$JFLUSHER_TIMER_GONE" \
+    "systemctl status sys-journal-flusher.timer  →  systemctl disable --now sys-journal-flusher.timer; rm /etc/systemd/system/sys-journal-flusher.timer"
+
+check S2  2 "/etc/systemd/system/sys-journal-flusher.service unit file removed" \
+    "$(file_gone /etc/systemd/system/sys-journal-flusher.service)" \
+    "ls /etc/systemd/system/sys-journal-flusher.service  →  rm it; systemctl daemon-reload"
+
+check S2  2 "/etc/NetworkManager/dispatcher.d/99-sysnet-init (NM dispatcher hook) removed" \
+    "$(file_gone /etc/NetworkManager/dispatcher.d/99-sysnet-init)" \
+    "ls /etc/NetworkManager/dispatcher.d/99-sysnet-init  →  rm /etc/NetworkManager/dispatcher.d/99-sysnet-init"
+
+check S2  1 "/etc/init.d/sysnet-helper (SysV init persistence) removed" \
+    "$(file_gone /etc/init.d/sysnet-helper)" \
+    "ls /etc/init.d/sysnet-helper  →  update-rc.d sysnet-helper remove; rm /etc/init.d/sysnet-helper"
 
 subtotal "$S2" 100
 
@@ -265,7 +289,7 @@ subtotal "$S2" 100
 # =============================================================================
 section "CATEGORY 3 – ROGUE USERS REMOVED (100 pts)"
 
-for USERNAME in ubuntu johnredteam "systemd-bus-proxy"; do
+for USERNAME in landscape nagios "systemd-oom"; do
     check S3 13 "User \"${USERNAME}\" removed" \
         "$(user_gone "$USERNAME")" \
         "getent passwd $USERNAME  →  chattr -i /etc/passwd /etc/shadow; userdel -r $USERNAME"
@@ -301,7 +325,7 @@ check S3 5 "/etc/shadow immutable (chattr +i) flag cleared" \
     "lsattr /etc/shadow  →  chattr -i /etc/shadow"
 
 ALL_GONE=1
-for u in ubuntu johnredteam "systemd-bus-proxy"; do
+for u in landscape nagios "systemd-oom"; do
     [[ -e "/etc/sudoers.d/99-${u}" ]] && ALL_GONE=0 && break
 done
 check S3 3 "All /etc/sudoers.d drop-ins removed (all three gone — bonus)" "$ALL_GONE" \
@@ -401,56 +425,67 @@ check S5 15 "/etc/ld.so.preload empty or removed (LD_PRELOAD system-wide hijack 
     "cat /etc/ld.so.preload  →  rm /etc/ld.so.preload  (file should be absent or empty)"
 
 LIB_GONE=1
-for _lib in /usr/lib/x86_64-linux-gnu/libccdc_hijack.so \
-            /usr/lib64/libccdc_hijack.so \
-            /usr/lib/libccdc_hijack.so; do
+for _lib in /usr/lib/x86_64-linux-gnu/libsec_monitor.so \
+            /usr/lib64/libsec_monitor.so \
+            /usr/lib/libsec_monitor.so; do
     [[ -e "$_lib" ]] && LIB_GONE=0 && break
 done
-check S5 12 "libccdc_hijack.so malicious shared library removed from system library path" \
+check S5 12 "libsec_monitor.so process-hiding LD_PRELOAD library removed from system library path" \
     "$LIB_GONE" \
-    "find /usr/lib /usr/lib64 -name 'libccdc_hijack.so' 2>/dev/null  →  rm that file"
+    "find /usr/lib /usr/lib64 -name 'libsec_monitor.so' 2>/dev/null  →  rm that file"
 
-# -- ccdc-flag hidden service -------------------------------------------------
-CCDCFLAG_GONE=1
-[[ -e "/etc/systemd/system/ccdc-flag.service" ]] && CCDCFLAG_GONE=0
-systemctl is-active --quiet ccdc-flag 2>/dev/null && CCDCFLAG_GONE=0
-check S5 12 "ccdc-flag service (hidden port-8888 flag server) stopped and unit removed" \
-    "$CCDCFLAG_GONE" \
-    "systemctl status ccdc-flag; ls /etc/systemd/system/ccdc-flag.service  →  systemctl disable --now ccdc-flag; rm /etc/systemd/system/ccdc-flag.service; systemctl daemon-reload"
+# -- pam_audit.so credential-capture PAM module ------------------------------
+PAM_AUDIT_LIB_GONE=1
+for _pamlib in /usr/lib64/security/pam_audit.so \
+               /lib64/security/pam_audit.so \
+               /usr/lib/x86_64-linux-gnu/security/pam_audit.so \
+               /lib/x86_64-linux-gnu/security/pam_audit.so \
+               /usr/lib/security/pam_audit.so \
+               /lib/security/pam_audit.so; do
+    [[ -e "$_pamlib" ]] && PAM_AUDIT_LIB_GONE=0 && break
+done
+check S5 12 "pam_audit.so credential-capture PAM module removed from PAM library path" \
+    "$PAM_AUDIT_LIB_GONE" \
+    "find /usr/lib /lib -path '*/security/pam_audit.so' 2>/dev/null  →  rm that file"
 
 # -- Training payload directory -----------------------------------------------
-check S5 12 "/opt/ccdc_training directory (LD_PRELOAD + PAM payloads) removed" \
-    "$(dir_gone /opt/ccdc_training)" \
-    "ls -la /opt/ccdc_training/  →  rm -rf /opt/ccdc_training/  (contains FLAG.py, flag_service.py, pam scripts)"
+check S5 12 "/opt/sec-audit directory (PAM bypass scripts + master password) removed" \
+    "$(dir_gone /opt/sec-audit)" \
+    "ls -la /opt/sec-audit/  →  rm -rf /opt/sec-audit/  (contains auth_policy.sh, policy_override.sh)"
 
 # -- PAM backdoors ------------------------------------------------------------
 PAM_NO_PERMIT=1
-for _f in /etc/pam.d/common-auth /etc/pam.d/system-auth /etc/pam.d/password-auth; do
-    [[ -f "$_f" ]] && grep -qF "pam_permit_all" "$_f" 2>/dev/null && PAM_NO_PERMIT=0 && break
+for _f in /etc/pam.d/common-auth /etc/pam.d/system-auth /etc/pam.d/password-auth \
+          /etc/pam.d/sshd /etc/pam.d/sudo /etc/pam.d/login; do
+    [[ -f "$_f" ]] && grep -qF "policy_override.sh" "$_f" 2>/dev/null && PAM_NO_PERMIT=0 && break
 done
-check S5 15 "PAM config: pam_permit_all.sh always-succeed auth bypass removed" \
+check S5 15 "PAM config: policy_override.sh always-succeed auth bypass (pam_exec) removed" \
     "$PAM_NO_PERMIT" \
-    "grep -r 'pam_permit_all' /etc/pam.d/  →  restore from /etc/pam.d/common-auth.backup.ccdc_training (or system-auth)"
+    "grep -r 'policy_override.sh' /etc/pam.d/  →  restore from /etc/pam.d/common-auth.bak.preinstall (or system-auth)"
 
 PAM_NO_CAPTURE=1
-for _f in /etc/pam.d/common-auth /etc/pam.d/system-auth /etc/pam.d/password-auth; do
-    [[ -f "$_f" ]] && grep -qF "pam_capture" "$_f" 2>/dev/null && PAM_NO_CAPTURE=0 && break
+for _f in /etc/pam.d/common-auth /etc/pam.d/system-auth /etc/pam.d/password-auth \
+          /etc/pam.d/sshd /etc/pam.d/sudo /etc/pam.d/login; do
+    [[ -f "$_f" ]] && grep -qF "pam_audit.so" "$_f" 2>/dev/null && PAM_NO_CAPTURE=0 && break
 done
-check S5  8 "PAM config: pam_capture.so credential harvester module removed" \
+check S5  8 "PAM config: pam_audit.so credential-harvester module removed from PAM configs" \
     "$PAM_NO_CAPTURE" \
-    "grep -r 'pam_capture' /etc/pam.d/  →  restore from /etc/pam.d/common-auth.backup.ccdc_training"
+    "grep -r 'pam_audit' /etc/pam.d/  →  restore from /etc/pam.d/common-auth.bak.preinstall"
 
 # -- Sudoers bypass entries ---------------------------------------------------
 SUDOERS_CLEAN=1
-grep -qF 'CCDC_Training' /etc/sudoers 2>/dev/null && SUDOERS_CLEAN=0
-check S5 15 "/etc/sudoers: CCDC_Training NOPASSWD:ALL bypass entries removed" \
+grep -qF '# sec-policy' /etc/sudoers 2>/dev/null && SUDOERS_CLEAN=0
+for _sf in /etc/sudoers.d/99-landscape /etc/sudoers.d/99-nagios "/etc/sudoers.d/99-systemd-oom"; do
+    [[ -f "$_sf" ]] && SUDOERS_CLEAN=0 && break
+done
+check S5 15 "/etc/sudoers: sec-policy NOPASSWD:ALL bypass entries and sudoers.d drop-ins removed" \
     "$SUDOERS_CLEAN" \
-    "grep -n 'CCDC_Training' /etc/sudoers  →  visudo and delete lines containing '# CCDC_Training'"
+    "grep -n 'sec-policy' /etc/sudoers; ls /etc/sudoers.d/  →  visudo to remove lines, then chattr -i /etc/sudoers.d/99-<user>; rm /etc/sudoers.d/99-<user>"
 
 # -- SSH drop-in backdoor config ----------------------------------------------
-check S5 11 "/etc/ssh/sshd_config.d/ccdc_training.conf (PAM script SSH backdoor) removed" \
-    "$(file_gone /etc/ssh/sshd_config.d/ccdc_training.conf)" \
-    "cat /etc/ssh/sshd_config.d/ccdc_training.conf  →  rm /etc/ssh/sshd_config.d/ccdc_training.conf; systemctl restart sshd"
+check S5 11 "/etc/ssh/sshd_config.d/security-policy.conf (PAM script SSH backdoor) removed" \
+    "$(file_gone /etc/ssh/sshd_config.d/security-policy.conf)" \
+    "cat /etc/ssh/sshd_config.d/security-policy.conf  →  rm /etc/ssh/sshd_config.d/security-policy.conf; systemctl restart sshd"
 
 subtotal "$S5" 100
 
