@@ -13,10 +13,13 @@ import getpass
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PANOS_LIB = os.path.join(os.path.dirname(_HERE), "General_Scripts", "SetupScripts", "panos")
+sys.path.insert(0, _HERE)
+sys.path.insert(0, _PANOS_LIB)
 from panos_lib import PanosAPI
-from CCDC_Red_Team_Tools.WORK_IN_PROGRESS_setupscripts.CCDC_PANOS_Setup_DirtyFirewall import run_setup
-from CCDC_Red_Team_Tools.WORK_IN_PROGRESS_setupscripts.CCDC_PANOS_Cleanup import run_cleanup
+from CCDC_PANOS_Setup_DirtyFirewall import run_setup
+from CCDC_PANOS_Cleanup import run_cleanup
 
 
 BANNER = """

@@ -14,7 +14,10 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PANOS_LIB = os.path.join(os.path.dirname(_HERE), "General_Scripts", "SetupScripts", "panos")
+sys.path.insert(0, _HERE)
+sys.path.insert(0, _PANOS_LIB)
 from panos_lib import PanosAPI, DEVICE, VSYS
 
 STATE_FILE = os.path.join(os.path.dirname(__file__), "panos_exercise_state.json")

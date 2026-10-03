@@ -12,9 +12,12 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PANOS_LIB = os.path.join(os.path.dirname(_HERE), "General_Scripts", "SetupScripts", "panos")
+sys.path.insert(0, _HERE)
+sys.path.insert(0, _PANOS_LIB)
 from panos_lib import PanosAPI, DEVICE, VSYS
-from CCDC_Red_Team_Tools.WORK_IN_PROGRESS_setupscripts.CCDC_PANOS_Setup_DirtyFirewall import (
+from CCDC_PANOS_Setup_DirtyFirewall import (
     STATE_FILE, ROGUE_ADMIN, ROGUE_SYSLOG_PROFILE, ROGUE_LOG_FWD,
     ROGUE_URL_PROFILE, ROGUE_RULE, ROGUE_AUTH_PROFILE,
 )
