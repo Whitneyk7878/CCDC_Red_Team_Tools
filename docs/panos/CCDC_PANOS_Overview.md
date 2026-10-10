@@ -73,7 +73,8 @@ Written by setup, consumed by cleanup. Contains original values for every settin
 | `WORK_IN_PROGRESS_setupscripts/CCDC_PANOS_Run.py` | CLI orchestrator — main entry point |
 | `WORK_IN_PROGRESS_setupscripts/CCDC_PANOS_WebUI.py` | Flask web UI alternative |
 | `WORK_IN_PROGRESS_setupscripts/CCDC_PANOS_Setup_DirtyFirewall.py` | 12-step misconfiguration engine |
-| `WORK_IN_PROGRESS_setupscripts/CCDC_PANOS_Cleanup.py` | 12-step reversal engine |
+| `WORK_IN_PROGRESS_setupscripts/CCDC_PANOS_Cleanup.py` | 12-step reversal engine (requires state file) |
+| `WORK_IN_PROGRESS_setupscripts/CCDC_PANOS_StatelessCleanup.py` | Stateless reversal — no state file needed |
 | `General_Scripts/SetupScripts/panos/panos_lib.py` | `PanosAPI` shared library (all XML API calls) |
 | `docs/panos/CCDC_PANOS_Plan.md` | Full design doc with API reference and future ideas |
 | `docs/panos/panos-guide.html` | Styled HTML reference guide |
@@ -107,6 +108,28 @@ python CCDC_PANOS_Run.py
    - `[1]` Apply dirty state — type `yes` to confirm → runs all 12 misconfigs → commits → prints rogue API key
    - `[2]` Run cleanup → type `yes` to confirm → reads `panos_exercise_state.json` → reverses all 12 → commits → deletes state file
    - `[3]` Exit
+
+### Option C — Stateless Cleanup (no state file)
+
+Use this when `panos_exercise_state.json` is unavailable — e.g. it was deleted,
+the setup was run on a different machine, or you need to clean up manually mid-exercise.
+
+```bash
+cd WORK_IN_PROGRESS_setupscripts/
+python CCDC_PANOS_StatelessCleanup.py
+```
+
+Enter firewall IP and credentials (same as the other scripts). The script:
+- Deletes all named artifacts by their hardcoded names (`netadmin`, `ExternalLogging`,
+  `allow-all`, `permit-all-traffic`, `LocalBypass`)
+- Re-enables logging and decryption rules
+- **Skips** items that require original config values (security profiles, DNS sinkholing,
+  zone flood protection, management permitted-IPs) and prints `[!]` notes for each
+- Commits at the end
+
+After running, review the `[!]` notes and manually restore anything that was skipped.
+
+---
 
 ### Option B — Web UI
 
