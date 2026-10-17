@@ -14,7 +14,7 @@
 #   8. Users: HomeIntruders
 #   9. WebShell: OopsAllWebShells
 #
-# Supports: Ubuntu, Debian, CentOS, RHEL, Fedora
+# Supports: Ubuntu, Debian, CentOS, RHEL, Fedora, Oracle Linux
 # Usage:    sudo bash CCDC_Linux_COMBINED.sh
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
@@ -77,7 +77,7 @@ set_distro_vars() {
             WEB_SERVER_SVC="httpd"
             BASH_RC_PATH="/etc/bashrc"
             ;;
-        fedora)
+        fedora|ol)
             PKG_MGR="dnf"
             PKG_UPDATE="dnf update -y"
             PKG_INSTALL="dnf install -y"
@@ -117,7 +117,7 @@ section_1_atd() {
     info "Installing 'at' package..."
     case "$OS" in
         ubuntu|debian) DEBIAN_FRONTEND=noninteractive apt-get install -y at 2>/dev/null || true ;;
-        fedora)        dnf install -y at 2>/dev/null || true ;;
+        fedora|ol)     dnf install -y at 2>/dev/null || true ;;
         centos|rhel)   yum install -y at 2>/dev/null || true ;;
     esac
 
@@ -793,7 +793,7 @@ section_7_remoteaccess() {
             SHELLINABOX_SVC="shellinaboxd"; SHELLINABOX_CONF="/etc/sysconfig/shellinaboxd"
             SSH_SVC="sshd"; SFTP_SERVER="/usr/libexec/openssh/sftp-server"
             ;;
-        centos|rhel)
+        centos|rhel|ol)
             if command -v dnf &>/dev/null; then
                 RA_PKG_INSTALL="dnf install -y"; RA_PKG_UPDATE="dnf check-update -y || true"
             else
@@ -868,7 +868,7 @@ SSHEOF
             grep -q "telnet6" "$INETD_CONF" 2>/dev/null || \
                 echo "telnet  stream tcp6 nowait root /usr/sbin/in.telnetd in.telnetd" >> "$INETD_CONF"
             ;;
-        fedora|centos|rhel)
+        fedora|centos|rhel|ol)
             cat > /etc/xinetd.d/telnet << 'TELNETEOF'
 service telnet
 {
@@ -892,7 +892,7 @@ TELNETEOF
     info "Installing Cockpit web management interface..."
     case "$OS" in
         ubuntu|debian) $RA_PKG_INSTALL cockpit || true ;;
-        fedora|centos|rhel) $RA_PKG_INSTALL cockpit cockpit-dashboard cockpit-packagekit || true ;;
+        fedora|centos|rhel|ol) $RA_PKG_INSTALL cockpit cockpit-dashboard cockpit-packagekit || true ;;
     esac
     mkdir -p /etc/cockpit
     cat > /etc/cockpit/cockpit.conf << 'COCKPITEOF'
@@ -949,7 +949,7 @@ SHELLEOF
             grep -q "in.rlogind" "$INETD_CONF" 2>/dev/null || \
                 echo "login  stream tcp  nowait root /usr/sbin/in.rlogind in.rlogind" >> "$INETD_CONF"
             ;;
-        fedora|centos|rhel)
+        fedora|centos|rhel|ol)
             cat > /etc/xinetd.d/rsh << 'RSHEOF'
 service shell
 {
@@ -1002,7 +1002,7 @@ TFTPEOF
                 success "TFTP (tftpd-hpa) running on UDP 69 — write-enabled at $TFTP_ROOT" || \
                 warn "TFTP not active — check: journalctl -u tftpd-hpa -n 20"
             ;;
-        fedora|centos|rhel)
+        fedora|centos|rhel|ol)
             cat > /etc/xinetd.d/tftp <<TFTPEOF
 service tftp
 {
