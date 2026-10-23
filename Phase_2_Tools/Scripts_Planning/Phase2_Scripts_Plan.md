@@ -1,3 +1,14 @@
+# Distro Support (All Phase 2 Linux Scripts)
+
+**All Phase 2 Linux scripts must support Ubuntu, Fedora, and Oracle Linux 9.**
+
+- Distro detection via `/etc/os-release` (`ID` field): `ubuntu`/`debian` → apt, `fedora` → dnf + Docker CE fedora repo, `ol`/`rhel`/`centos` → dnf + Docker CE rhel repo.
+- Service names differ: `apache2` (Ubuntu/Debian) vs `httpd` (RHEL-family/Fedora/Oracle). Include both in any `systemctl` commands.
+- Shell/package manager differences: use `apt-get` for Ubuntu, `dnf` for Fedora/Oracle Linux 9.
+- When installing packages, check if already present before installing to keep scripts idempotent.
+
+---
+
 # Context
 
 Phase 2 of the CCDC Red Team exercise. New setup scripts that challenge the blue team with MITRE ATT&CK techniques not yet properly covered in Phase 1. Scripts follow the same naming convention, header style, and helper-function patterns established in Phase 1 (`CCDC_<OS>_<Category>_<FunName>.<ext>`).

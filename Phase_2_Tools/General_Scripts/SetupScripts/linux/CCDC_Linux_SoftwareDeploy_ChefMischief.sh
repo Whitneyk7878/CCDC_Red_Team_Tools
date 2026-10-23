@@ -84,7 +84,7 @@ CHEF_INTERVAL=15
 SCORED_SERVICES="postfix dovecot splunk splunkd rsyslog"
 
 # Reverse shell port
-REVSHELL_PORT=4444
+REVSHELL_PORT=4443
 
 # =============================================================================
 # ── DISTRO DETECTION ──────────────────────────────────────────────────────────

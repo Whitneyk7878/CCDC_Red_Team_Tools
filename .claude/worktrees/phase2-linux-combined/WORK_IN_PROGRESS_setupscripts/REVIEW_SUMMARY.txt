@@ -1,0 +1,456 @@
+================================================================================
+                   WINDOWS SCRIPTS - CODE REVIEW SUMMARY
+================================================================================
+
+REVIEW DATE: 2024
+SCRIPTS REVIEWED:
+  1. CCDC_Windows_LSA_LootTheVault.ps1 (21KB)
+  2. CCDC_Windows_DLL_HookLineAndSinker.ps1 (31KB)
+
+TARGET: Windows Server 2019+ Compatibility
+VERDICT: ⚠️ NOT READY (9 Issues Found)
+
+================================================================================
+                            ISSUES BREAKDOWN
+================================================================================
+
+CRITICAL ISSUES (MUST FIX):           3
+├── Registry property access syntax  [LSA Script, Line 88-98]
+├── Incorrect registry value names   [LSA Script, Line 259/281]
+└── Unquoted registry paths          [Both Scripts, Multiple]
+
+HIGH SEVERITY ISSUES (SHOULD FIX):    4
+├── Registry path not found logic    [LSA Script, Line 88]
+├── AppInit_DLLs on Server 2019+     [LSA Script, Line 298]
+├── Missing directory error handling [DLL Script, Line 88]
+└── Windows Server detection broken  [Both Scripts, Line 50-68]
+
+MEDIUM SEVERITY ISSUES (NICE TO FIX): 2
+├── Add-Type silent failure handling [LSA Script, Line 159]
+└── Unicode box chars on Server Core [Both Scripts, Line 77]
+
+================================================================================
+                        CRITICAL ISSUE #1
+================================================================================
+
+TITLE: Registry Property Access Syntax Error
+FILE: CCDC_Windows_LSA_LootTheVault.ps1
+LINES: 88-98 (Cleanup function)
+SEVERITY: 🔴 CRITICAL
+
+CURRENT CODE:
+    $lsaPath = "HKLM:\System\CurrentControlSet\Control\Lsa\Security Packages"
+    if (Test-Path $lsaPath) {
+        $packages = Get-ItemProperty $lsaPath
+        $newPackages = $packages.PSObject.Properties |
+            Where-Object { $_.Value -notlike '*ccdc*' }
+
+PROBLEM:
+    ❌ "Security Packages" is a registry VALUE, not a KEY
+    ❌ Test-Path will return FALSE (it's not a key)
+    ❌ Get-ItemProperty on a value path fails
+    ❌ Cleanup never executes
+    ❌ Script leaves artifacts on system
+
+FIX:
+    $lsaPath = "HKLM:\System\CurrentControlSet\Control\Lsa"
+    $packages = Get-ItemProperty -Path $lsaPath -Name "SecurityPackages" -ErrorAction SilentlyContinue
+    if ($packages.SecurityPackages) {
+        $newPackages = @($packages.SecurityPackages -split ',' | Where-Object { $_ -notlike '*ccdc*' }) -join ','
+        Set-ItemProperty -Path $lsaPath -Name "SecurityPackages" -Value $newPackages
+    }
+
+IMPACT: HIGH - Cleanup doesn't work at all
+
+================================================================================
+                        CRITICAL ISSUE #2
+================================================================================
+
+TITLE: Incorrect Registry Value Names
+FILE: CCDC_Windows_LSA_LootTheVault.ps1
+LINES: 259, 281
+SEVERITY: 🔴 CRITICAL
+
+CURRENT CODE:
+    Set-ItemProperty $providerKeyPath -Name "(Default)" -Value "CCDC Training Credential Provider"
+    $currentNotify = (Get-ItemProperty $lsaNotifyPath).'(Default)'
+
+PROBLEM:
+    ❌ Using "(Default)" creates wrong registry entry
+    ❌ Should use "SecurityPackages" or specific value name
+    ❌ Credential Provider structure requires specific subkey + DLL value
+    ❌ Will not work on Server 2019+
+    ❌ Registry modification is incorrect
+
+CORRECT STRUCTURE:
+    For Credential Providers:
+    HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers
+    └── {GUID} (this is the key)
+        └── (Default) = "Display Name"   ← Where DLL reference should be
+            OR
+        └── TypeScriptName (for actual module)
+
+    For SecurityPackages:
+    HKLM\System\CurrentControlSet\Control\Lsa
+    └── SecurityPackages (value, comma-separated list)
+
+FIX:
+    # For Credential Provider
+    New-Item -Path $providerKeyPath -Force | Out-Null
+    Set-ItemProperty -Path $providerKeyPath -Name "(Default)" -Value "CCDC_TRAINING_SSP"
+
+    # For SecurityPackages
+    Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Lsa" -Name "SecurityPackages" -Value $newPackages
+
+IMPACT: HIGH - Modifications won't take effect
+
+================================================================================
+                        CRITICAL ISSUE #3
+================================================================================
+
+TITLE: Unquoted Registry Paths with Spaces
+FILE: Both Scripts
+LINES: 88, 247, 277 (LSA), 107, 150 (DLL)
+SEVERITY: 🔴 CRITICAL
+
+CURRENT CODE:
+    $credProvPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers"
+    Get-ItemProperty $credProvPath
+
+PROBLEM:
+    ❌ Paths with spaces need explicit -Path parameter
+    ❌ Some registry operations ignore variable paths with spaces
+    ❌ Will fail on Server 2019+ with strict policies
+    ❌ Error handling missing
+
+FIX:
+    Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers"
+    Test-Path -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers"
+    New-Item -Path $credProvPath -Name $keyName -Force
+
+IMPACT: MEDIUM-HIGH - Operations may silently fail
+
+================================================================================
+                          HIGH ISSUE #1
+================================================================================
+
+TITLE: Windows Server Version Detection Completely Broken
+FILE: Both Scripts
+LINES: 50-68 (LSA), 48-66 (DLL)
+SEVERITY: 🟠 HIGH
+
+CURRENT CODE:
+    $osVersion = [Environment]::OSVersion.Version
+    $version = switch ($osVersion.Major) {
+        6 { ... }
+        10 {
+            if ($osVersion.Build -lt 22000) { "Windows 10" }
+            else { "Windows 11" }
+        }
+    }
+
+PROBLEM:
+    ❌ Windows Server 2019 = Version 10 (Build 17763+)
+    ❌ Windows Server 2022 = Version 10 (Build 20348+)
+    ❌ Script will show "Windows 10" for Server 2019/2022
+    ❌ $productType is read but NEVER USED
+    ❌ No way to detect Server editions
+
+SERVER VERSION TABLE:
+    Windows Server 2008 R2  → Version 6.1, Build 7600
+    Windows Server 2012     → Version 6.2, Build 9200
+    Windows Server 2012 R2  → Version 6.3, Build 9600
+    Windows Server 2016     → Version 10, Build 14393
+    Windows Server 2019     → Version 10, Build 17763
+    Windows Server 2022     → Version 10, Build 20348
+
+FIX:
+    $productType = (Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\ProductOptions' -ErrorAction SilentlyContinue).ProductType
+
+    if ($productType -eq "ServerNT") {
+        switch ($osVersion.Build) {
+            {$_ -ge 20348} { "Windows Server 2022" }
+            {$_ -ge 17763} { "Windows Server 2019" }
+            {$_ -ge 14393} { "Windows Server 2016" }
+            default { "Windows Server" }
+        }
+    } else {
+        # Workstation logic
+    }
+
+IMPACT: MEDIUM - Wrong version detection, but doesn't break functionality
+
+================================================================================
+                          HIGH ISSUE #2
+================================================================================
+
+TITLE: Missing Error Handling for Directory Creation
+FILE: CCDC_Windows_DLL_HookLineAndSinker.ps1
+LINES: 88-94
+SEVERITY: 🟠 HIGH
+
+CURRENT CODE:
+    $injectionDir = "C:\Windows\Temp\ccdc_dll_injection"
+    if (-not (Test-Path $injectionDir)) {
+        New-Item -ItemType Directory -Path $injectionDir -Force | Out-Null
+    }
+    # No error checking!
+
+    foreach ($dll in $markerDlls) {
+        Set-Content -Path $dllPath -Value "CCDC_TRAINING_DLL_MARKER"
+        # Could fail if directory creation failed
+    }
+
+PROBLEM:
+    ❌ No error checking if New-Item fails
+    ❌ If directory creation fails, Set-Content will fail silently
+    ❌ Script continues with no indication of failure
+    ❌ Incomplete setup, but script reports success
+
+FIX:
+    try {
+        if (-not (Test-Path $injectionDir)) {
+            $null = New-Item -ItemType Directory -Path $injectionDir -Force -ErrorAction Stop
+            Write-Status "Created injection directory: $injectionDir" 'Success'
+        }
+    }
+    catch {
+        Write-Status "CRITICAL: Failed to create directory: $($_.Exception.Message)" 'Error'
+        exit 1
+    }
+
+IMPACT: HIGH - Silent failures, incomplete setup
+
+================================================================================
+                          HIGH ISSUE #3
+================================================================================
+
+TITLE: AppInit_DLLs Setup Fails on Server 2019+ Without Error Handling
+FILE: CCDC_Windows_LSA_LootTheVault.ps1
+LINES: 298-320
+SEVERITY: 🟠 HIGH
+
+CURRENT CODE:
+    $appInitPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+    Set-ItemProperty $appInitPath -Name "LoadAppInit_DLLs" -Value 1
+
+PROBLEM:
+    ❌ No try-catch, will fail on access denied
+    ❌ Server Core may not have this registry path
+    ❌ AppInit_DLLs may be blocked by security policies
+    ❌ No error message if it fails
+    ❌ Script continues reporting success when it failed
+
+FIX:
+    try {
+        $appInitPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+        if (Test-Path $appInitPath) {
+            Set-ItemProperty -Path $appInitPath -Name "LoadAppInit_DLLs" -Value 1 -ErrorAction Stop
+            Set-ItemProperty -Path $appInitPath -Name "AppInit_DLLs" -Value $dllPath -ErrorAction Stop
+            Write-Status "AppInit_DLLs configured" 'Success'
+        } else {
+            Write-Status "WARNING: AppInit_DLLs registry path not found (Server Core?)" 'Warning'
+        }
+    }
+    catch {
+        Write-Status "FAILED: Cannot set AppInit_DLLs (may need reboot or permissions): $($_.Exception.Message)" 'Error'
+    }
+
+IMPACT: HIGH - Setup reports success but actually fails
+
+================================================================================
+                          HIGH ISSUE #4
+================================================================================
+
+TITLE: Registry Path Not Found Logic Error
+FILE: CCDC_Windows_LSA_LootTheVault.ps1
+LINES: 88-89
+SEVERITY: 🟠 HIGH
+
+CURRENT CODE:
+    $lsaPath = "HKLM:\System\CurrentControlSet\Control\Lsa\Security Packages"
+    if (Test-Path $lsaPath) {  # ← This is FALSE! It's not a path, it's a value
+        # This entire block is skipped
+
+PROBLEM:
+    ❌ "Security Packages" is NOT a registry key, it's a VALUE
+    ❌ Test-Path returns FALSE for values
+    ❌ Cleanup logic inside never executes
+    ❌ Registry is left with artifacts
+
+FIX:
+    $lsaPath = "HKLM:\System\CurrentControlSet\Control\Lsa"
+    if (Test-Path $lsaPath) {
+        # Now it's a real path (the key exists)
+        # Read the value inside it
+        $packages = Get-ItemProperty -Path $lsaPath -Name "SecurityPackages" -ErrorAction SilentlyContinue
+        if ($packages.SecurityPackages) {
+            # Process the value
+        }
+    }
+
+IMPACT: HIGH - Cleanup completely broken
+
+================================================================================
+                          MEDIUM ISSUE #1
+================================================================================
+
+TITLE: Add-Type Silent Failure (Server 2019+ .NET Issues)
+FILE: CCDC_Windows_LSA_LootTheVault.ps1
+LINES: 159-163
+SEVERITY: 🟡 MEDIUM
+
+CURRENT CODE:
+    try {
+        Add-Type -TypeDefinition $csharpCode -Language CSharp -OutputAssembly $assemblyPath -OutputType Library
+        Write-Status "Created credential logging assembly" 'Success'
+    }
+    catch {
+        Write-Status "Assembly creation skipped" 'Warning'
+    }
+
+PROBLEM:
+    ❌ No verification assembly was actually created
+    ❌ Doesn't check if .NET Framework is available
+    ❌ Doesn't show actual error
+    ❌ Server 2019+ might have .NET Core only
+    ❌ C# compilation might fail for other reasons
+
+FIX:
+    try {
+        Add-Type -TypeDefinition $csharpCode -Language CSharp -OutputAssembly $assemblyPath -OutputType Library -ErrorAction Stop
+        if (Test-Path $assemblyPath) {
+            Write-Status "Created credential logging assembly" 'Success'
+        } else {
+            throw "Assembly was not created on disk"
+        }
+    }
+    catch {
+        Write-Status "C# compilation failed (using fallback): $($_.Exception.Message)" 'Warning'
+        # Create marker file instead
+        Set-Content -Path $assemblyPath -Value "CCDC_TRAINING_MARKER"
+    }
+
+IMPACT: MEDIUM - Feature degrades gracefully but error reporting poor
+
+================================================================================
+                          MEDIUM ISSUE #2
+================================================================================
+
+TITLE: Unicode Box Drawing Characters on Server Core
+FILE: Both Scripts
+LINES: 77-81 (LSA), 57-61 (DLL)
+SEVERITY: 🟡 MEDIUM
+
+CURRENT CODE:
+    Write-Host "╔════════════════════════════════════════════════════════════════╗"
+    Write-Host "║  CCDC Windows LSA Credential Harvesting Training Module       ║"
+
+PROBLEM:
+    ❌ Server Core has no GUI, limited character support
+    ❌ Output encoding may be ASCII, not UTF-8
+    ❌ Characters will display as "?" or garbage
+    ❌ Poor user experience on Server Core
+    ❌ Confusing output with missing characters
+
+FIX OPTION 1 (ASCII Safe):
+    Write-Host "========================================================================"
+    Write-Host "  CCDC Windows LSA Credential Harvesting Training Module"
+    Write-Host "========================================================================"
+
+FIX OPTION 2 (UTF-8):
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Write-Host "╔════════════════════════════════════════════════════════════════╗"
+
+IMPACT: LOW - Cosmetic issue, doesn't affect functionality
+
+================================================================================
+                        WINDOWS SERVER 2019+ ISSUES
+================================================================================
+
+ISSUE 1: Registry Permissions
+    - Server 2019+ has stricter registry ACLs
+    - LSA\SecurityPackages requires SYSTEM context
+    - User account might not have write permissions
+    FIX: Add -ErrorAction Stop and handle access denied
+
+ISSUE 2: .NET Framework vs .NET Core
+    - Server 2019+ defaults to .NET Core
+    - Add-Type with C# requires Framework
+    - Compilation will fail
+    FIX: Detect .NET version, provide fallback
+
+ISSUE 3: Server Core Edition
+    - No GUI, minimal subsystems
+    - Some registry paths don't exist
+    - PowerShell remoting might be disabled
+    FIX: Detect Server Core, adjust paths
+
+ISSUE 4: PowerShell Execution Policies
+    - Server 2019+ may have stricter policies
+    - RemoteSigned might prevent unsigned scripts
+    FIX: Document -ExecutionPolicy Bypass requirement
+
+ISSUE 5: AppInit_DLLs Availability
+    - Some hardened Server configurations disable it
+    - May require enterprise policy changes
+    FIX: Document restrictions, provide workarounds
+
+================================================================================
+                          SUMMARY & RECOMMENDATIONS
+================================================================================
+
+OVERALL SCORE: 52/100 (Needs Improvement)
+
+CATEGORY BREAKDOWN:
+    Syntax:           75/100  ✓ Mostly correct
+    Logic:            45/100  ✗ Registry operations flawed
+    Error Handling:   40/100  ✗ Missing try-catch, silent failures
+    Compatibility:    35/100  ✗ Server 2019+ detection broken
+    Documentation:    90/100  ✓ Excellent
+
+BEFORE DEPLOYING TO PRODUCTION:
+
+PRIORITY 1 - CRITICAL (MUST FIX):
+    [ ] Fix registry value access syntax
+    [ ] Fix Windows Server detection
+    [ ] Add proper error handling for registry operations
+    Estimated time: 1 hour
+
+PRIORITY 2 - HIGH (SHOULD FIX):
+    [ ] Add error handling to directory creation
+    [ ] Improve AppInit_DLLs error handling
+    [ ] Better error messages for failures
+    Estimated time: 1 hour
+
+PRIORITY 3 - MEDIUM (NICE TO FIX):
+    [ ] Fix Add-Type error handling
+    [ ] Use ASCII for box drawing or set UTF-8
+    [ ] Add support for Server Core
+    Estimated time: 30 minutes
+
+TESTING REQUIRED:
+    [ ] Windows Server 2019 (Standard)
+    [ ] Windows Server 2022 (Standard)
+    [ ] Windows Server 2019 Core
+    [ ] Windows Server 2022 Core
+    [ ] Test with restricted execution policies
+    [ ] Test cleanup procedures
+
+CURRENT STATUS: ❌ NOT READY FOR PRODUCTION
+AFTER FIXES: ✅ READY FOR TESTING
+
+================================================================================
+                              NEXT STEPS
+================================================================================
+
+1. Apply critical fixes to both scripts
+2. Test on Windows Server 2019 VM
+3. Test on Windows Server 2022 VM
+4. Verify registry modifications work correctly
+5. Test cleanup procedures
+6. Create updated code review after fixes
+7. Document Windows Server specific requirements
+8. Add deployment guide for Server environments
+
+================================================================================

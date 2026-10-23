@@ -1,0 +1,688 @@
+<title>PAN-OS Training Scripts</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+/* ─── tokens: slate-navy ground, amber accent, teal info ─── */
+:root {
+  --bg:         #f5f4f1;
+  --bg-2:       #ebe9e4;
+  --bg-3:       #dddad4;
+  --fg:         #1a1815;
+  --fg-2:       #4a4640;
+  --fg-3:       #7a746c;
+  --accent:     #c94f1a;
+  --accent-dim: #f4ddd2;
+  --teal:       #0f7c7c;
+  --teal-dim:   #d0ecec;
+  --code-bg:    #e6e4df;
+  --border:     #cec9c1;
+  --warn:       #8a6200;
+  --warn-dim:   #f5eacc;
+  --success:    #1a6e3c;
+  --success-dim:#d4edd8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:         #131418;
+    --bg-2:       #1c1f26;
+    --bg-3:       #252931;
+    --fg:         #e8e4dd;
+    --fg-2:       #a8a29a;
+    --fg-3:       #6e6860;
+    --accent:     #e8693a;
+    --accent-dim: #2a1a10;
+    --teal:       #2ac4c4;
+    --teal-dim:   #0a2828;
+    --code-bg:    #0c0e12;
+    --border:     #2e3240;
+    --warn:       #e8b44a;
+    --warn-dim:   #221800;
+    --success:    #4ec874;
+    --success-dim:#0a2016;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:         #131418;
+  --bg-2:       #1c1f26;
+  --bg-3:       #252931;
+  --fg:         #e8e4dd;
+  --fg-2:       #a8a29a;
+  --fg-3:       #6e6860;
+  --accent:     #e8693a;
+  --accent-dim: #2a1a10;
+  --teal:       #2ac4c4;
+  --teal-dim:   #0a2828;
+  --code-bg:    #0c0e12;
+  --border:     #2e3240;
+  --warn:       #e8b44a;
+  --warn-dim:   #221800;
+  --success:    #4ec874;
+  --success-dim:#0a2016;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.7;
+  margin: 0;
+  padding-inline: 16px;
+  padding-block: 0;
+}
+
+.page-wrap {
+  max-width: 860px;
+  margin-inline: auto;
+  padding-block: 2.5rem 4rem;
+}
+
+.page-header {
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 1.5rem;
+  margin-bottom: 2.5rem;
+}
+.eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 0.4rem;
+}
+.page-header h1 {
+  font-family: 'Syne', sans-serif;
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-weight: 800;
+  margin: 0 0 0.6rem;
+  line-height: 1.1;
+  text-wrap: balance;
+}
+.page-header .subtitle {
+  color: var(--fg-2);
+  font-size: 0.95rem;
+  margin: 0;
+  max-width: 60ch;
+}
+
+section { margin-bottom: 2.8rem; }
+
+h2 {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0 0 1rem;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+h2 .sec-num {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  background: var(--accent-dim);
+  padding: 0.1em 0.45em;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+h3 {
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 1.2rem 0 0.5rem;
+  color: var(--fg);
+}
+
+code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.82em;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.callout {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-dim);
+  color: var(--fg);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+.callout.warn  { border-color: var(--warn);    background: var(--warn-dim);    color: var(--warn); }
+.callout.info  { border-color: var(--teal);    background: var(--teal-dim);    color: var(--teal); }
+.callout.success { border-color: var(--success); background: var(--success-dim); color: var(--success); }
+.callout strong { font-weight: 600; }
+
+.prereq-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+@media (max-width: 560px) { .prereq-grid { grid-template-columns: 1fr; } }
+
+.prereq-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+}
+.prereq-card h3 {
+  margin: 0 0 0.7rem;
+  font-size: 0.85rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.prereq-card ul { margin: 0; padding-left: 1.2rem; font-size: 0.9rem; }
+.prereq-card li { margin-bottom: 0.35rem; }
+
+.file-tree {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.83rem;
+  line-height: 1.9;
+}
+.file-tree .dir       { color: var(--teal); font-weight: 500; }
+.file-tree .main-file { color: var(--accent); font-weight: 500; }
+.file-tree .comment   { color: var(--fg-3); font-style: italic; }
+
+.methods {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+.method-btn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 0.4rem 0.9rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.method-btn:hover  { background: var(--bg-3); color: var(--fg); }
+.method-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.method-panel        { display: none; }
+.method-panel.active { display: block; }
+
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+.steps li {
+  counter-increment: step;
+  display: flex;
+  gap: 0.9rem;
+  margin-bottom: 1.1rem;
+  align-items: flex-start;
+}
+.steps li::before {
+  content: counter(step);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  width: 1.6rem;
+  height: 1.6rem;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 0.2rem;
+}
+.steps li .step-body { flex: 1; min-width: 0; }
+.steps li .step-body p { margin: 0 0 0.4rem; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+thead th {
+  background: var(--bg-3);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  padding: 0.5rem 0.8rem;
+  text-align: left;
+  border-bottom: 2px solid var(--border);
+}
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:hover { background: var(--bg-2); }
+tbody td { padding: 0.55rem 0.8rem; vertical-align: top; }
+tbody td:first-child {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.badge {
+  display: inline-block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  padding: 0.1em 0.5em;
+  border-radius: 3px;
+  margin-right: 0.25rem;
+  margin-bottom: 0.15rem;
+}
+.badge-vis  { background: var(--accent-dim); color: var(--accent); }
+.badge-perm { background: var(--warn-dim);   color: var(--warn); }
+.badge-net  { background: var(--teal-dim);   color: var(--teal); }
+.badge-insp { background: var(--bg-3);       color: var(--fg-2); }
+
+hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+.trouble-item {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.8rem;
+}
+.trouble-item .symptom { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.3rem; }
+.trouble-item .fix { font-size: 0.875rem; color: var(--fg-2); }
+
+.creds-box {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+.cred-item {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.88rem;
+}
+.cred-item .cred-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-3);
+  margin-bottom: 0.2rem;
+}
+.cred-item .cred-val { font-family: 'IBM Plex Mono', monospace; font-weight: 500; color: var(--warn); }
+</style>
+
+<div class="page-wrap">
+
+  <header class="page-header">
+    <p class="eyebrow">CCDC Red Team — PAN-OS 11.1.x</p>
+    <h1>PAN-OS Training Scripts</h1>
+    <p class="subtitle">Setup and usage guide for the dirty-state firewall scripts. Applies intentional misconfigurations for blue team hardening exercises, then cleans everything up afterward.</p>
+  </header>
+
+  <!-- Prerequisites -->
+  <section>
+    <h2><span class="sec-num">01</span> Prerequisites</h2>
+    <div class="prereq-grid">
+      <div class="prereq-card">
+        <h3>On the Firewall</h3>
+        <ul>
+          <li>PAN-OS 11.1.x, standalone (not Panorama-managed)</li>
+          <li>A superuser admin account with <strong>XML API access enabled</strong><br>
+            <small style="color:var(--fg-3)">Device → Admin Roles → [role] → XML API — all checkboxes on</small></li>
+          <li>Management interface reachable on port 443 from your machine</li>
+          <li>A baseline config: at least 2 zones, a few security rules, URL filtering profile, anti-spyware profile, decryption policy, zone protection profiles</li>
+        </ul>
+      </div>
+      <div class="prereq-card">
+        <h3>On Your Machine</h3>
+        <ul>
+          <li>Python 3.8+</li>
+          <li><code>pip install requests flask</code>
+            <br><small style="color:var(--fg-3)"><code>flask</code> only needed for the Web UI</small></li>
+          <li>Network route to the firewall management IP on port 443</li>
+          <li>This repo cloned locally</li>
+        </ul>
+      </div>
+    </div>
+    <div class="callout warn" style="margin-top:1rem">
+      <strong>Warning:</strong> These scripts commit live to the firewall immediately. Only run them against a training or lab device — never production.
+    </div>
+  </section>
+
+  <!-- File Structure -->
+  <section>
+    <h2><span class="sec-num">02</span> File Structure</h2>
+    <div class="file-tree">
+<span class="dir">WORK_IN_PROGRESS_setupscripts/</span><br>
+├── <span class="main-file">CCDC_PANOS_WebUI.py</span>               <span class="comment"># ★ recommended — browser dashboard</span><br>
+├── <span class="main-file">CCDC_PANOS_Run.py</span>                 <span class="comment"># interactive CLI orchestrator</span><br>
+├── <span class="main-file">CCDC_PANOS_Setup_DirtyFirewall.py</span> <span class="comment"># applies all misconfigs + commits</span><br>
+├── <span class="main-file">CCDC_PANOS_Cleanup.py</span>             <span class="comment"># reverses all misconfigs + commits</span><br>
+└── panos_exercise_state.json             <span class="comment"># auto-created after setup runs</span><br>
+<br>
+<span class="dir">General_Scripts/SetupScripts/panos/</span><br>
+└── panos_lib.py                          <span class="comment"># shared XML API library (imported by all scripts)</span>
+    </div>
+    <div class="callout info" style="margin-top:0.75rem">
+      <strong>State file:</strong> <code>panos_exercise_state.json</code> is written by Setup and read by Cleanup. It captures all original values so Cleanup can restore them exactly. Do not delete it between setup and cleanup.
+    </div>
+  </section>
+
+  <!-- Running the Scripts -->
+  <section>
+    <h2><span class="sec-num">03</span> Running the Scripts</h2>
+    <p style="margin-top:0; color:var(--fg-2); font-size:0.9rem">Three ways to run — pick one. The Web UI is the easiest for instructors during a live exercise.</p>
+
+    <div class="methods">
+      <button class="method-btn active" onclick="showMethod('webui', this)">Web UI (Recommended)</button>
+      <button class="method-btn" onclick="showMethod('cli', this)">CLI Orchestrator</button>
+      <button class="method-btn" onclick="showMethod('direct', this)">Direct Script</button>
+    </div>
+
+    <!-- Web UI -->
+    <div class="method-panel active" id="panel-webui">
+      <div class="callout success"><strong>Best for live exercises.</strong> Runs in your browser, streams output in real time. No terminal needed once it's started.</div>
+
+      <h3>Start the server</h3>
+      <pre><code>cd WORK_IN_PROGRESS_setupscripts
+pip install flask requests
+python3 CCDC_PANOS_WebUI.py</code></pre>
+      <p>Open <strong>http://localhost:5000</strong> in your browser.</p>
+
+      <h3>Default PIN</h3>
+      <p>The dashboard requires a PIN. Default is <code>ccdc2024</code>. Override with an environment variable before starting:</p>
+      <pre><code>PANOS_UI_PIN=mypin python3 CCDC_PANOS_WebUI.py</code></pre>
+
+      <h3>Workflow</h3>
+      <ol class="steps">
+        <li><div class="step-body"><p>Enter the PIN on the login screen.</p></div></li>
+        <li><div class="step-body"><p>Enter the firewall's management IP. Choose <strong>username + password</strong> or paste an existing <strong>API key</strong>, then click <strong>Connect</strong>. A green status message confirms the connection.</p></div></li>
+        <li><div class="step-body"><p>Click <strong>Apply Dirty State</strong> to push all misconfigurations and commit. Output streams live into the log panel. When complete, the exercise can begin.</p></div></li>
+        <li><div class="step-body"><p>After the exercise, click <strong>Run Cleanup</strong> to reverse all changes and commit. The firewall is restored to its pre-exercise state.</p></div></li>
+      </ol>
+    </div>
+
+    <!-- CLI Orchestrator -->
+    <div class="method-panel" id="panel-cli">
+      <div class="callout info"><strong>Interactive terminal menu.</strong> Authenticates once, then lets you run setup or cleanup from a numbered menu.</div>
+
+      <pre><code>cd WORK_IN_PROGRESS_setupscripts
+python3 CCDC_PANOS_Run.py</code></pre>
+
+      <ol class="steps">
+        <li><div class="step-body"><p>Enter the firewall management IP when prompted.</p></div></li>
+        <li><div class="step-body"><p>Choose whether to use an existing API key or enter username + password. An API key is generated automatically from credentials.</p></div></li>
+        <li><div class="step-body"><p>Select <strong>[1] Apply dirty state</strong> to start the exercise, or <strong>[2] Run cleanup</strong> to reset. Type <code>yes</code> at the confirmation prompt.</p></div></li>
+        <li><div class="step-body"><p>Select <strong>[3] Exit</strong> when done.</p></div></li>
+      </ol>
+    </div>
+
+    <!-- Direct Script -->
+    <div class="method-panel" id="panel-direct">
+      <div class="callout"><strong>Run setup or cleanup independently</strong> without the orchestrator. Useful for scripting or if you only need one half.</div>
+
+      <h3>Setup only</h3>
+      <pre><code>cd WORK_IN_PROGRESS_setupscripts
+python3 CCDC_PANOS_Setup_DirtyFirewall.py</code></pre>
+
+      <h3>Cleanup only</h3>
+      <pre><code>python3 CCDC_PANOS_Cleanup.py</code></pre>
+
+      <p>Both scripts prompt for firewall IP and credentials (or an API key) at the start. Setup saves <code>panos_exercise_state.json</code>; Cleanup reads and deletes it.</p>
+
+      <div class="callout warn"><strong>Note:</strong> Cleanup requires the state file to exist. If it's missing it will refuse to run. Run Setup first, or use the orchestrator to manage both.</div>
+    </div>
+  </section>
+
+  <!-- Authentication -->
+  <section>
+    <h2><span class="sec-num">04</span> Authentication</h2>
+    <p style="margin-top:0">All three methods support the same two auth paths:</p>
+
+    <h3>Username + Password (generates API key automatically)</h3>
+    <p>Enter your admin credentials when prompted. The scripts call the PAN-OS <code>keygen</code> API endpoint and exchange them for a session API key. The plaintext password is never stored.</p>
+
+    <h3>Pre-generated API key</h3>
+    <p>If your management auth profile blocks the keygen endpoint (e.g., RADIUS/LDAP with no local fallback), generate an API key manually first:</p>
+    <pre><code># From a browser — paste this URL and grab the &lt;key&gt; value:
+https://&lt;fw-ip&gt;/api/?type=keygen&user=admin&password=&lt;pass&gt;
+
+# Via curl:
+curl -k "https://&lt;fw-ip&gt;/api/?type=keygen&user=admin&password=&lt;pass&gt;"</code></pre>
+    <p>Paste the value from the <code>&lt;key&gt;…&lt;/key&gt;</code> tag into the API key prompt.</p>
+
+    <div class="callout">
+      <strong>TLS note:</strong> PAN-OS uses a self-signed certificate by default. The scripts pass <code>verify=False</code> and suppress the InsecureRequestWarning. This is expected in a lab context.
+    </div>
+  </section>
+
+  <!-- What Gets Applied -->
+  <section>
+    <h2><span class="sec-num">05</span> What Gets Applied</h2>
+    <p style="margin-top:0; color:var(--fg-2); font-size:0.9rem">Setup applies 12 misconfigurations across four categories. All are reversed by Cleanup using the saved state file.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Misconfiguration</th>
+            <th>Category</th>
+            <th>Training Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Logging disabled on all security rules</td>
+            <td><span class="badge badge-vis">Visibility</span></td>
+            <td>Blue team is blind to traffic events in the firewall log</td>
+          </tr>
+          <tr>
+            <td>Syslog redirected to <code>172.31.40.6:514</code></td>
+            <td><span class="badge badge-vis">Visibility</span></td>
+            <td>Red team receives all firewall logs in real time</td>
+          </tr>
+          <tr>
+            <td>URL filtering set to allow-all on all rules</td>
+            <td><span class="badge badge-insp">Inspection</span></td>
+            <td>C2, phishing, and data exfil URLs go unchecked</td>
+          </tr>
+          <tr>
+            <td>AV / IPS / anti-spyware profiles stripped from all rules</td>
+            <td><span class="badge badge-insp">Inspection</span></td>
+            <td>No layer 7 security inspection on any traffic</td>
+          </tr>
+          <tr>
+            <td>DNS sinkholing disabled in all anti-spyware profiles</td>
+            <td><span class="badge badge-insp">Inspection</span></td>
+            <td>Infected hosts can resolve and reach C2 via DNS</td>
+          </tr>
+          <tr>
+            <td>App-ID set to <code>any</code> on all security rules</td>
+            <td><span class="badge badge-insp">Inspection</span></td>
+            <td>Rules are port-based only — application evasion is trivial</td>
+          </tr>
+          <tr>
+            <td>SSL/TLS decryption rules disabled</td>
+            <td><span class="badge badge-insp">Inspection</span></td>
+            <td>All HTTPS traffic is opaque to inspection</td>
+          </tr>
+          <tr>
+            <td>Catch-all <code>permit-any-traffic</code> rule added (logging off)</td>
+            <td><span class="badge badge-net">Network</span></td>
+            <td>Any traffic from any zone is allowed through</td>
+          </tr>
+          <tr>
+            <td>Zone flood protection deleted from all zone profiles</td>
+            <td><span class="badge badge-net">Network</span></td>
+            <td>Firewall is vulnerable to SYN/UDP/ICMP flood attacks</td>
+          </tr>
+          <tr>
+            <td>Management plane <code>permitted-ip</code> list cleared</td>
+            <td><span class="badge badge-net">Network</span></td>
+            <td>Version fingerprinting and brute force from any IP</td>
+          </tr>
+          <tr>
+            <td>Rogue superuser <code>netadmin</code> created</td>
+            <td><span class="badge badge-perm">Persistence</span></td>
+            <td>Persistent admin access even if passwords are rotated</td>
+          </tr>
+          <tr>
+            <td>Local auth bypass profile set as active mgmt auth</td>
+            <td><span class="badge badge-perm">Persistence</span></td>
+            <td>Nullifies any RADIUS/LDAP requirement for admin logins</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Rogue account credentials</h3>
+    <p>The setup script creates a backdoor superuser. These are printed to the instructor terminal only — <strong>never share them with the blue team.</strong></p>
+    <div class="creds-box">
+      <div class="cred-item">
+        <div class="cred-label">Username</div>
+        <div class="cred-val">netadmin</div>
+      </div>
+      <div class="cred-item">
+        <div class="cred-label">Password</div>
+        <div class="cred-val">Winter2024!</div>
+      </div>
+      <div class="cred-item">
+        <div class="cred-label">Role</div>
+        <div class="cred-val">Superuser</div>
+      </div>
+      <div class="cred-item">
+        <div class="cred-label">API Key</div>
+        <div class="cred-val">Printed to terminal</div>
+      </div>
+    </div>
+    <div class="callout warn">
+      <strong>The rogue API key survives a password change.</strong> Blue teams that only rotate the <code>netadmin</code> password remain compromised. They must delete the account entirely to revoke the key.
+    </div>
+  </section>
+
+  <!-- Cleanup -->
+  <section>
+    <h2><span class="sec-num">06</span> Cleanup</h2>
+    <p style="margin-top:0">Cleanup reads <code>panos_exercise_state.json</code> and precisely reverses every change — restoring original values per rule, per profile, per object. It then commits and deletes the state file.</p>
+
+    <h3>What gets restored</h3>
+    <ul style="font-size:0.9rem">
+      <li>Original <code>log-end</code> / <code>log-start</code> per security rule</li>
+      <li>System syslog setting, per-rule log-setting; rogue syslog and log forwarding profiles deleted</li>
+      <li>Original URL filtering profile per rule; allow-all profile deleted</li>
+      <li>Security profile XML per rule (AV/IPS/spyware)</li>
+      <li>DNS sinkhole config per anti-spyware profile</li>
+      <li>Original application list per rule</li>
+      <li>Decryption rules re-enabled</li>
+      <li>Catch-all <code>permit-any-traffic</code> rule deleted</li>
+      <li>Zone flood protection config per zone profile</li>
+      <li>Management IP restriction list (skipped if it was unrestricted before setup)</li>
+      <li><code>netadmin</code> account deleted</li>
+      <li>Original management auth profile restored; <code>LocalBypass</code> profile deleted</li>
+    </ul>
+
+    <div class="callout info">
+      <strong>Partial runs:</strong> Each cleanup step is wrapped in a try/except and continues on failure. If an individual reversal fails (e.g., an object was already deleted manually), it logs a warning and moves on. The commit still runs at the end.
+    </div>
+  </section>
+
+  <!-- Troubleshooting -->
+  <section>
+    <h2><span class="sec-num">07</span> Troubleshooting</h2>
+
+    <div class="trouble-item">
+      <div class="symptom">Cannot reach &lt;fw-ip&gt; — check IP and that management HTTPS is enabled</div>
+      <div class="fix">Verify port 443 is reachable: <code>curl -k https://&lt;fw-ip&gt;/api/</code>. Check <em>Device → Setup → Interfaces → Management</em> and confirm HTTPS is checked. If <code>permitted-ip</code> is set, add your machine's IP.</div>
+    </div>
+
+    <div class="trouble-item">
+      <div class="symptom">Auth failed / Auth failed: …</div>
+      <div class="fix">Confirm the account has superuser role and XML API access enabled. If the firewall uses RADIUS/LDAP, the keygen endpoint may be blocked — generate an API key via the Web UI (<em>Device → API Key Management</em>) and paste it at the API key prompt instead.</div>
+    </div>
+
+    <div class="trouble-item">
+      <div class="symptom">No state file found — run the setup script first</div>
+      <div class="fix">Cleanup requires <code>panos_exercise_state.json</code> to exist alongside the scripts. If it was deleted, Cleanup cannot safely reverse changes. Re-stage the firewall, run Setup again, then run Cleanup.</div>
+    </div>
+
+    <div class="trouble-item">
+      <div class="symptom">Commit status shows error / pending</div>
+      <div class="fix">PAN-OS commits are queued and can take 30–60 seconds. If a commit is already running, the API returns a job ID rather than completing. Wait for it to finish in <em>Device → Tasks</em>, then re-run the script.</div>
+    </div>
+
+    <div class="trouble-item">
+      <div class="symptom">Skipped: [step description] printed during setup or cleanup</div>
+      <div class="fix">Each step is wrapped in a try/except. "Skipped" means the XPath wasn't found — usually the baseline config doesn't have that object (no decryption rules, no zone protection profiles, etc.). Safe to ignore unless the missing object is critical to the exercise.</div>
+    </div>
+
+    <div class="trouble-item">
+      <div class="symptom">Web UI shows "Connection lost" during a long setup</div>
+      <div class="fix">The PAN-OS commit step can take over a minute. The EventSource stream has a 120-second timeout. If it cuts out, the operation is still running on the server side — check the terminal where you started <code>CCDC_PANOS_WebUI.py</code> for the final output.</div>
+    </div>
+  </section>
+
+  <!-- Customizing -->
+  <section>
+    <h2><span class="sec-num">08</span> Customizing Object Names</h2>
+    <p style="margin-top:0">All rogue object names and the syslog target are constants at the top of <code>CCDC_PANOS_Setup_DirtyFirewall.py</code>. Edit these before running if you need different values:</p>
+
+    <pre><code>ROGUE_ADMIN          = "netadmin"
+ROGUE_PASS           = "Winter2024!"
+ROGUE_SYSLOG_PROFILE = "ExternalLogging"
+ROGUE_LOG_FWD        = "ExternalLogging"
+ROGUE_URL_PROFILE    = "allow-all"
+ROGUE_RULE           = "permit-all-traffic"
+ROGUE_AUTH_PROFILE   = "LocalBypass"
+SYSLOG_IP            = "172.31.40.6"
+SYSLOG_PORT          = "514"</code></pre>
+
+    <p>The device and vsys targets are in <code>General_Scripts/SetupScripts/panos/panos_lib.py</code>:</p>
+    <pre><code>DEVICE = "localhost.localdomain"   # default for a standalone PA
+VSYS   = "vsys1"</code></pre>
+  </section>
+
+</div>
+
+<script>
+function showMethod(id, btn) {
+  document.querySelectorAll('.method-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.method-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+</script>
