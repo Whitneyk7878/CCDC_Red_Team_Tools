@@ -47,7 +47,7 @@ $ErrorActionPreference = "Continue"
 #region OPERATOR CONFIG — Fill ALL values before running
 # =============================================================================
 
-$RedTeamIP             = "CHANGEME"          # C2 IP — WhosThere, BackgroundBeef, ChocolateFactory
+$RedTeamIP             = "172.31.40.6"          # C2 IP — WhosThere, BackgroundBeef, ChocolateFactory
 
 $WhosThere_Port        = 4449                # WhosThere reverse shell callback port
 $WhosThere_Magic       = @(0xDE, 0xAD, 0xBE, 0xEF)  # Magic bytes that trigger WhosThere
@@ -58,7 +58,7 @@ $BackgroundBeef_C2     = ""                  # Optional C2 URL for BITS payload 
 
 $ChocolateFactory_Port = 4452                # ChocolateFactory reverse shell callback port
 
-$MemoryHole_Pass       = "CHANGEME"          # MemoryHole passphrase — anti-accident guardrail
+$MemoryHole_Pass       = "12345678"          # MemoryHole passphrase — anti-accident guardrail
 
 #endregion
 
