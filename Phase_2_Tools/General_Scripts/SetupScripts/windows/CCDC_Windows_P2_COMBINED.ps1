@@ -202,9 +202,9 @@ function Show-Menu {
     for ($i = 0; $i -lt $n; $i++) {
         $m    = $_ModuleOrder[$i]
         $e    = $State[$m]
-        $lbl  = Get-StatusLabel (if ($e) { $e.Status } else { "" })
+        $lbl  = Get-StatusLabel $(if ($e) { $e.Status } else { "" })
         $desc = $_ModuleMeta[$m]
-        $col  = switch (if ($e) { $e.Status } else { "" }) {
+        $col  = switch ($(if ($e) { $e.Status } else { "" })) {
             "SUCCESS" { "Green"  }
             "FAILED"  { "Red"    }
             default   { "White"  }
@@ -1243,22 +1243,22 @@ while ($true) {
     $state = Read-StateFile
     Show-Menu -State $state
 
-    $input = Read-Host "  Selection"
-    $input = $input.Trim()
+    $selection = Read-Host "  Selection"
+    $selection = $selection.Trim()
 
-    if ($input -match '^[qQ]') {
+    if ($selection -match '^[qQ]') {
         Write-Host ""
         Write-Host "  Exiting. State saved to: $StateFile" -ForegroundColor DarkGray
         Show-Status
         break
     }
 
-    if ($input -match '^[aA]') {
+    if ($selection -match '^[aA]') {
         Run-Modules -ToRun $_ModuleOrder
         continue
     }
 
-    $tokens  = $input -split '[,\s]+' | Where-Object { $_ }
+    $tokens  = $selection -split '[,\s]+' | Where-Object { $_ }
     $resolved = $tokens | ForEach-Object { Resolve-ModuleName $_ } | Where-Object { $_ }
     $invalid  = $tokens | Where-Object { -not (Resolve-ModuleName $_) }
 
