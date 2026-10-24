@@ -241,7 +241,7 @@ preflight_deps() {
                 apt-get install -y -q linux-headers-generic 2>/dev/null || \
                 warn "Kernel headers unavailable — KernelSneak will use LD_PRELOAD fallback"
 
-            systemctl enable --now docker 2>/dev/null || true
+            command -v docker &>/dev/null && systemctl enable --now docker &>/dev/null || true
             ;;
 
         fedora|rhel)
@@ -269,7 +269,7 @@ preflight_deps() {
                     https://download.docker.com/linux/fedora/docker-ce.repo 2>/dev/null || true
                 dnf install -y -q docker-ce docker-ce-cli containerd.io 2>/dev/null || \
                     warn "Docker CE unavailable for this Fedora version — will use Podman fallback"
-                systemctl enable --now docker 2>/dev/null || true
+                command -v docker &>/dev/null && systemctl enable --now docker &>/dev/null || true
             fi
             ;;
     esac
@@ -782,23 +782,30 @@ run_docker_poisoner() {
         case "${DISTRO}" in
             ubuntu)
                 export DEBIAN_FRONTEND=noninteractive
-                apt-get update -qq
-                apt-get install -y -q docker.io
-                systemctl enable --now docker
+                apt-get update -qq 2>/dev/null || true
+                apt-get install -y -q docker.io 2>/dev/null || true
                 ;;
             fedora)
-                dnf -y install dnf-plugins-core
-                dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
-                dnf install -y docker-ce docker-ce-cli containerd.io
-                systemctl enable --now docker
+                dnf -y install dnf-plugins-core 2>/dev/null || true
+                dnf config-manager --add-repo \
+                    https://download.docker.com/linux/fedora/docker-ce.repo 2>/dev/null || true
+                dnf install -y docker-ce docker-ce-cli containerd.io 2>/dev/null || true
                 ;;
             rhel)
-                dnf -y install dnf-plugins-core
-                dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
-                dnf install -y docker-ce docker-ce-cli containerd.io
-                systemctl enable --now docker
+                dnf -y install dnf-plugins-core 2>/dev/null || true
+                dnf config-manager --add-repo \
+                    https://download.docker.com/linux/rhel/docker-ce.repo 2>/dev/null || true
+                dnf install -y docker-ce docker-ce-cli containerd.io 2>/dev/null || true
                 ;;
         esac
+        # Only enable/start docker if the binary actually landed — systemctl errors
+        # print to stdout on some systemd versions so &>/dev/null catches both streams
+        if command -v docker &>/dev/null; then
+            systemctl enable --now docker &>/dev/null || true
+        else
+            err "Docker install failed (no binary found) — triggering fallback"
+            return 1
+        fi
         local attempts=0
         until docker info &>/dev/null 2>&1; do
             attempts=$(( attempts + 1 ))
