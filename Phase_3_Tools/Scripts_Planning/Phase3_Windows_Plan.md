@@ -48,6 +48,7 @@ All scripts go under `Phase_3_Tools/General_Scripts/SetupScripts/windows/`.
 | 6 | `CCDC_Windows_P3_Persist_GhostInTheWMI.ps1` | T1546.003, T1546.015, T1547.010 | All |
 | 7 | `CCDC_Windows_P3_Evasion_BlindSpot.ps1` | T1562.002, T1562.006, T1070.001, T1059.001 | All |
 | 8 | `CCDC_Windows_P3_COMBINED.ps1` | (orchestrator, all IDs above) | Role-detected |
+| 9 | `CCDC_Windows_P3_Rootkit_r77Shadow.ps1` | T1014, T1564.001, T1543.003, T1036.004 | All (x64 only) — **STANDALONE** |
 
 ---
 
@@ -62,6 +63,7 @@ All scripts go under `Phase_3_Tools/General_Scripts/SetupScripts/windows/`.
 | MSSQL_DeadInTheWater | ✓ | — | — |
 | Persist_GhostInTheWMI | ✓ | ✓ | ✓ |
 | Evasion_BlindSpot | ✓ | ✓ | ✓ |
+| Rootkit_r77Shadow | ✓ | ✓ | ✓ (x64 only; standalone — not in COMBINED) |
 
 ---
 
@@ -166,6 +168,27 @@ Destroys visibility so blue team can't use Windows' own investigation capabiliti
 | Sysmon removal | Detect `SysmonDrv`/`Sysmon64` service; `sc stop`; delete driver + binary; IFEO intercept on `sysmon.exe` and `sysmon64.exe` |
 | EVTX journal corruption | Stop EventLog service; overwrite Security/System/Application `.evtx` with corrupted 4-byte EVTX magic header — forensic tools report "invalid log file"; EventLog recreates empty logs on next start |
 | WER disable | `HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\Disabled=1`; stop `WerSvc` — no crash dumps |
+
+---
+
+---
+
+### 9 — `Rootkit_r77Shadow.ps1`
+
+STANDALONE — not invoked by COMBINED. Must be run separately after other Phase 3 scripts.
+External binary dependency: r77-rootkit (bytecode77/r77-rootkit, prebuilt releases).
+Red team must stage `Install.exe` and optionally `Uninstall.exe` on their HTTP server.
+
+| Layer | What | Detail |
+|---|---|---|
+| Download | `Install.exe` from `-BinUrl` via WebClient | Staged to `%SystemRoot%\Temp\$77stage\` (hidden by rootkit once active) |
+| Install | Run `Install.exe` silently | r77 injects into all running processes; registers hidden service |
+| Verify | Check `HKLM:\SYSTEM\CurrentControlSet\Services\$77*` directly | Service hidden from sc.exe/Get-Service after injection |
+| Config key | Create `HKLM:\SOFTWARE\$77config` | Operator runtime communication; hidden by rootkit |
+| Tag artifacts (optional) | `-TagExistingArtifacts` copies existing CCDC files to `$77`-prefixed names | Files become invisible immediately |
+
+Hide prefix (`$77`) is baked into the r77 binary at compile time. The default release build uses `$77`.
+Blue team remediation: kernel-mode ARK tool (GMER/Malwarebytes ARK) → find hidden service → `sc.exe stop/delete` → `Uninstall.exe`.
 
 ---
 
