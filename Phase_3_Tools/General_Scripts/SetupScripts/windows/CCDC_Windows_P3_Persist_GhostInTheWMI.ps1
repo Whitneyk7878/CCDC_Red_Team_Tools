@@ -151,6 +151,10 @@ try {
     }
     Write-Success "CommandLineEventConsumer '$consumerName' created"
 
+    # Re-query both objects so __PATH is guaranteed non-null (Set-WmiInstance can return it empty)
+    $filter   = Get-WmiObject -Namespace $wmiNS -Class __EventFilter              -Filter "Name='$filterName'"
+    $consumer = Get-WmiObject -Namespace $wmiNS -Class CommandLineEventConsumer    -Filter "Name='$consumerName'"
+
     $null = Set-WmiInstance -Namespace $wmiNS -Class __FilterToConsumerBinding -Arguments @{
         Filter   = $filter.__PATH
         Consumer = $consumer.__PATH
