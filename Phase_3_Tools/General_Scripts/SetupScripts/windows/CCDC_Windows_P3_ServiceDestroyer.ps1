@@ -76,8 +76,8 @@ function Read-StateFile {
 function Write-StateFile { param([object[]]$Rows)
     try {
         $Rows | Export-Csv $script:StateFile -NoTypeInformation -Force -ErrorAction Stop
-        (Get-Item $script:StateFile -ErrorAction SilentlyContinue)?.Attributes = `
-            [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
+        $sf = Get-Item $script:StateFile -ErrorAction SilentlyContinue
+        if ($sf) { $sf.Attributes = [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System }
     } catch { }
 }
 
