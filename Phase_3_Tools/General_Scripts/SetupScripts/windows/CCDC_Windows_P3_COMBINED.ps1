@@ -788,6 +788,23 @@ function Invoke-NoEscape {
             $exeCollection.AppendChild($fragment) | Out-Null
         }
 
+        # SYSTEM (S-1-5-18) is not a member of BUILTIN\Administrators — without this
+        # allow rule, scheduled tasks running as SYSTEM are blocked by AppLocker after reboot.
+        $hasSystemAllow = $exeCollection.FilePathRule |
+            Where-Object { $_.Action -eq 'Allow' -and $_.UserOrGroupSid -eq 'S-1-5-18' }
+        if (-not $hasSystemAllow) {
+            $systemAllowXml = @"
+<FilePathRule Id="c7e22f1a-9b3d-4a8c-b5f0-3d4e56789abc"
+  Name="Allow SYSTEM - all files" Description="Allow SYSTEM account unrestricted execution"
+  UserOrGroupSid="S-1-5-18" Action="Allow">
+  <Conditions><FilePathCondition Path="*"/></Conditions>
+</FilePathRule>
+"@
+            $fragment = $policyDoc.CreateDocumentFragment()
+            $fragment.InnerXml = $systemAllowXml
+            $exeCollection.AppendChild($fragment) | Out-Null
+        }
+
         foreach ($tool in $TargetTools) {
             $id = [System.Guid]::NewGuid().ToString()
             $ruleXml = @"
@@ -1148,7 +1165,7 @@ SELECT * FROM Win32_ProcessStartTrace WHERE
         }
 
         if (-not (Get-ItemProperty $srpBase -Name 'DefaultLevel' -ErrorAction SilentlyContinue)) {
-            Set-ItemProperty $srpBase -Name 'DefaultLevel'       -Value 0x20000 -Type DWord
+            Set-ItemProperty $srpBase -Name 'DefaultLevel'       -Value 0x40000 -Type DWord
             Set-ItemProperty $srpBase -Name 'PolicyScope'        -Value 0       -Type DWord
             Set-ItemProperty $srpBase -Name 'ExecutableTypes'    -Value @('EXE') -Type MultiString
             Set-ItemProperty $srpBase -Name 'TransparentEnabled' -Value 1       -Type DWord
