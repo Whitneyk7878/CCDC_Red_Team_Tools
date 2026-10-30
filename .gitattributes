@@ -1,0 +1,21 @@
+# Normalize line endings: git stores LF, Windows checkouts get CRLF
+* text=auto
+
+# PowerShell scripts always CRLF (Windows tools expect it)
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Shell scripts always LF
+*.sh   text eol=lf
+
+# Markdown and text files: auto
+*.md   text
+*.txt  text
+
+# Binaries — no conversion
+*.exe  binary
+*.dll  binary
+*.png  binary
+*.jpg  binary
+*.zip  binary
