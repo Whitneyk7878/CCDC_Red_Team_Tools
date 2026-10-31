@@ -70,11 +70,17 @@ $_MH_PASS = "changeme"   # operator changes before deploy
 
 if ($Passphrase -ne $_MH_PASS) {
     $inner = [System.Reflection.AmbiguousMatchException]::new("Ambiguous match found.")
-    $outer = [System.Management.Automation.MethodInvocationException]::new(
+    $ex = [System.Management.Automation.MethodInvocationException]::new(
         "Exception calling `"GetMethod`" with `"1`" argument(s): `"Ambiguous match found.`"",
         $inner
     )
-    throw $outer
+    $er = [System.Management.Automation.ErrorRecord]::new(
+        $ex,
+        "AmbiguousMatchException",
+        [System.Management.Automation.ErrorCategory]::NotSpecified,
+        $null
+    )
+    $PSCmdlet.ThrowTerminatingError($er)
 }
 
 # -- Admin check (runs only after correct passphrase) -------------------------
