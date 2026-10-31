@@ -74,7 +74,8 @@ for ($n = 0; $n -lt $Count; $n++) {
     $name = $null
     for ($attempt = 0; $attempt -lt 5; $attempt++) {
         $candidate = New-HexName
-        $exists = Get-LocalUser -Name $candidate -ErrorAction SilentlyContinue
+        $exists = $false
+        try { Get-LocalUser -Name $candidate -ErrorAction Stop | Out-Null; $exists = $true } catch {}
         if (-not $exists) {
             $name = $candidate
             break
