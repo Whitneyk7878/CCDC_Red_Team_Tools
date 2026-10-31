@@ -24,8 +24,7 @@ function New-HexName {
 }
 
 function New-ComplexPassword {
-    # Build a password that satisfies Windows complexity:
-    # upper, lower, digit, special -- min 14 chars
+    # PS 5.1: nested functions cannot close over parent locals, so all logic is inlined here
     $upper   = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
     $lower   = 'abcdefghjkmnpqrstuvwxyz'
     $digits  = '23456789'
@@ -35,31 +34,31 @@ function New-ComplexPassword {
     $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
     $buf = New-Object byte[] 1
 
-    function Get-RandomChar([string]$charset) {
-        do {
-            $rng.GetBytes($buf)
-            $idx = $buf[0]
-        } while ($idx -ge (256 - (256 % $charset.Length)))
-        return $charset[$idx % $charset.Length]
+    $chars = New-Object char[] 14
+
+    # Guarantee one character from each required class
+    $required = @($upper, $lower, $digits, $special)
+    for ($i = 0; $i -lt 4; $i++) {
+        $cs = $required[$i]
+        do { $rng.GetBytes($buf) } while ($buf[0] -ge (256 - (256 % $cs.Length)))
+        $chars[$i] = $cs[$buf[0] % $cs.Length]
     }
 
-    $pw  = (Get-RandomChar $upper)
-    $pw += (Get-RandomChar $lower)
-    $pw += (Get-RandomChar $digits)
-    $pw += (Get-RandomChar $special)
+    # Fill remaining positions from full set
     for ($i = 4; $i -lt 14; $i++) {
-        $pw += (Get-RandomChar $all)
+        do { $rng.GetBytes($buf) } while ($buf[0] -ge (256 - (256 % $all.Length)))
+        $chars[$i] = $all[$buf[0] % $all.Length]
     }
 
-    # Fisher-Yates shuffle the characters
-    $chars = $pw.ToCharArray()
-    for ($i = $chars.Length - 1; $i -gt 0; $i--) {
-        $rng.GetBytes($buf)
+    # Fisher-Yates shuffle
+    for ($i = 13; $i -gt 0; $i--) {
+        do { $rng.GetBytes($buf) } while ($buf[0] -ge (256 - (256 % ($i + 1))))
         $j = $buf[0] % ($i + 1)
         $tmp = $chars[$i]
         $chars[$i] = $chars[$j]
         $chars[$j] = $tmp
     }
+
     return -join $chars
 }
 
