@@ -1,0 +1,318 @@
+//////////AD-DNS SERVER -- RED TEAM DEBRIEF
+//////////CCDC Competition Debrief -- Read to Blue Team
+
+
+
+
+//////////SCRIPTS EXECUTED ON THIS HOST
+
+// 1. CCDC_Windows_P3_Rootkit_r77Shadow.ps1
+// 2. CCDC_Windows_P3_Persist_MegaNukerOfDeath.ps1
+// 3. CCDC_Windows_P3_ServiceDestroyer.ps1
+// 4. CCDC_Windows_P3_Rootkit_r77HideServices.ps1
+
+
+
+
+//////////WHAT HAPPENED -- PHASE BY PHASE
+
+
+// PHASE 1 -- r77 ROOTKIT INSTALLED
+/////  The r77 rootkit is a Ring-3 userspace rootkit that intercepts Win32 API calls on every running process
+/////  It was downloaded from the red team HTTP server and executed silently
+/////  A Defender exclusion was added for the staging directory before execution
+/////  Real-time monitoring was briefly disabled during install to avoid detection
+/////  Once installed, any file, process, registry key, or service whose name starts with "$77" is completely invisible
+/////       Invisible to Explorer, dir, Get-ChildItem, Task Manager, Process Explorer, Regedit, and sc.exe
+/////  The rootkit registers a kernel-mode driver -- its own service name starts with $77 so it hides itself
+/////  This was installed FIRST so that every subsequent artifact was immediately hidden from blue team tools
+/////  Detection requires kernel-mode scanning tools: GMER or Malwarebytes Anti-Rootkit
+
+
+// PHASE 2 -- PERSISTENCE PLANTED (MEGANUKEROFDEATH)
+/////  Six scheduled tasks were planted across legitimate-looking Windows task folders:
+/////       \Microsoft\Windows\PerfTrack\PerfTrack-StandardCollector
+/////       \Microsoft\Windows\Defrag\StorOptimizer
+/////       \Microsoft\Windows\NetTrace\NetworkDiagLogger
+/////       \Microsoft\Windows\USOPrivate\UsoCore-ServiceHandler
+/////       \Microsoft\Windows\DiskCleanup\SilentCleanup2
+/////       \Microsoft\Windows\Registry\RegIdleBackup2
+/////  All six run as SYSTEM at Highest privilege, trigger at startup AND every 5 minutes for 10 years
+/////  Implant binaries were copied to two hidden drop directories:
+/////       C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache\
+/////       C:\Windows\System32\spool\drivers\color\
+/////  A self-healing watchdog script was dropped to the cache directory
+/////  A registry Run key "WinTaskWatchdog" was planted at HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+/////       This watchdog runs at every boot and re-creates any of the six tasks that were deleted
+/////  IMPORTANT: Deleting the six tasks alone is NOT enough -- the Run key re-plants them on the next boot
+
+
+// PHASE 3 -- ACTIVE DIRECTORY DESTROYED (KERBEROSSKHAOS)
+/////  Layer 1 -- Kerberos Ticket TTL Weaponization:
+/////       Group Policy security policy was modified via secedit.exe:
+/////            MaxTicketAge = 1 hour (down from default 10 hours)
+/////            MaxRenewAge = 1 day (down from default 7 days)
+/////            MaxClockSkew = 0 minutes (down from default 5 minutes)
+/////       gpupdate /force was run to push the policy immediately
+/////       All existing Kerberos tickets expired within 1 hour and could not be renewed past 1 day
+/////       Zero clock skew tolerance means any minor time drift instantly invalidates sessions
+/////       Impact: every domain user and computer session becomes unusable within 1 hour
+/////
+/////  Layer 2 -- Account Lockout Weaponization:
+/////       Default domain password policy was changed:
+/////            LockoutThreshold = 1 (one bad password = permanent lockout)
+/////            LockoutDuration = Never (no automatic unlock, ever)
+/////            LockoutObservationWindow = 99999 minutes
+/////       Service accounts were identified by name pattern (any account matching: *svc*, *dns*, *sql*, *iis*, *mssql*, *http*)
+/////       One bad password was intentionally submitted for each of those accounts
+/////       Result: all matching service accounts were permanently locked before blue team could respond
+/////       Impact: SQL Server service accounts, DNS service accounts, IIS app pools -- all immediately broken domain-wide
+/////
+/////  Layer 3 -- SYSVOL and NETLOGON ACL Destruction:
+/////       The Authenticated Users and Everyone ACEs were stripped from:
+/////            C:\Windows\SYSVOL\sysvol\<domain>\
+/////            C:\Windows\SYSVOL\sysvol\<domain>\Policies\
+/////            C:\Windows\SYSVOL\sysvol\<domain>\scripts\
+/////       Machine password changes were blocked: HKLM\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters\DisablePasswordChange = 1
+/////       Impact: Group Policy no longer applies to any domain client or server
+/////            Machine account password changes are blocked -- computer trust relationships begin to fail
+
+
+// PHASE 4 -- DNS COMPLETELY DESTROYED (CONDITIONALSURRENDER)
+/////  Layer 1 -- Conditional Forwarder Poisoning:
+/////       Conditional forwarder zones were added for ccdc.local, range.internal, and competition.local
+/////            All point to 192.0.2.1 -- an RFC 5737 documentation address that does not exist on the network
+/////       All non-auto-created primary DNS zones were deleted
+/////       The DNS server listen address was locked to 192.0.2.1 (a dead IP not bound to any NIC)
+/////       Impact: DNS accepts queries but answers nothing -- the service is up but completely non-functional
+/////
+/////  Layer 2 -- TTL and Scavenging Destruction:
+/////       Default zone TTL set to 1 second -- all cached DNS records expire within 1 second
+/////       Scavenging interval set to 1 hour with 1-hour refresh and no-refresh intervals
+/////       SOA minimum TTL zeroed out on all remaining zones
+/////       Aggressive aging enabled -- legitimate records scavenge themselves almost immediately
+/////       DNS service ImagePath in the registry was corrupted to C:\NonExistent\dns.exe
+/////            The DNS service cannot restart after being stopped
+/////
+/////  Layer 3 -- Recursion Trap and Management Lockout:
+/////       DNS recursion was disabled -- no recursive lookups can be performed
+/////       The root hints file (CACHE.DNS) was overwritten -- all 13 root servers now point to 192.0.2.1
+/////            Every recursive lookup that does get attempted hits a dead IP
+/////       DNS service was restarted to activate the poisoned root hints
+/////       Everyone was denied execute access on dnsmgmt.msc -- DNS Manager console cannot be opened
+/////       BUILTIN\Users was denied read access to the DNS service registry key
+/////       DNS service was stopped and disabled
+/////       Everyone was denied full access to C:\Windows\System32\dns\ recursively
+/////            Blue team cannot read, modify, or delete any zone file through normal tools
+/////  Note: A backup of CACHE.DNS was created at CACHE.DNS.bak before overwriting
+
+
+// PHASE 5 -- AD DATABASE AND DNS ZONE FILES HIDDEN WITH r77
+/////  The r77HideServices script renamed the Active Directory database files with the $77 prefix:
+/////       ntds.dit  --> $77ntds.dit       (in the NTDS directory, typically C:\Windows\NTDS\)
+/////       edb.log   --> $77edb.log
+/////       edb.chk   --> $77edb.chk
+/////  The AD DS service (NTDS) cannot start without ntds.dit -- the domain controller is effectively dead
+/////  DNS zone files were renamed in C:\Windows\System32\dns\:
+/////       Every *.dns zone file was renamed to $77<zone>.dns
+/////  DNS loads but answers SERVFAIL for all file-backed zones because the expected file paths contain nothing
+/////  While the rootkit is active ALL of these files are completely invisible to standard tools
+/////  The files are NOT deleted -- they are fully recoverable after rootkit removal
+/////
+/////  Connectivity was also destroyed across all remote management protocols:
+/////  WinRM:
+/////       All WinRM listener registry keys deleted
+/////       MaxEnvelopeSizekb set to 1 -- rejects all SOAP messages
+/////       All authentication methods disabled (Basic, Digest, Negotiate, Kerberos, Certificate)
+/////       Service account and binary path corrupted to non-existent values
+/////       WinRM stopped and disabled
+/////  SMB:
+/////       SMB1 and SMB2 disabled via policy and registry
+/////       All non-admin shares removed
+/////       LmCompatibilityLevel set to 0 -- LM-only auth, rejected by all modern clients
+/////       Service account and binary path corrupted
+/////       LanmanServer stopped and disabled
+/////  RDP:
+/////       RDP port changed from 3389 to 33890
+/////       fDenyTSConnections set to 1
+/////       Mutually exclusive auth settings applied (no valid configuration possible)
+/////       Fake non-existent service dependency added -- SCM refuses to start TermService
+/////       TermService stopped and disabled
+/////  ICMP and Network:
+/////       IPSec policy CCDC_ICMPKill deployed via netsh -- blocks all ICMPv4
+/////       MTU set to 68 bytes on all active NICs -- causes severe fragmentation on all traffic
+
+
+
+
+//////////WHY THIS WAS EFFECTIVE
+
+
+// The r77 rootkit was installed FIRST -- every subsequent artifact was immediately invisible
+// Persistence was planted while the host was clean -- survives reboots and partial cleanup attempts
+// Kerberos TTL weaponization caused a time-delayed total authentication failure across the entire domain
+/////  Blue team may not notice until 1 hour after the attack -- by then all sessions are dead
+// Service account lockout was surgical -- identified accounts by naming pattern and locked them instantly
+/////  No brute force needed -- threshold of 1 means a single bad authentication permanently locks the account
+// SYSVOL ACL destruction is silent and has no immediate error -- Group Policy just quietly stops working
+// DNS destruction used four simultaneous mechanisms:
+/////  Listen address locked to dead IP
+/////  Root hints poisoned
+/////  Primary zones deleted
+/////  Zone files hidden with $77
+/////  Any one of these would break DNS -- all four together means no single fix restores resolution
+// ntds.dit hiding = the domain controller cannot authenticate ANY domain account for the rest of the competition
+// All remote management (WinRM, RDP, SMB) was broken at the same time -- no easy path to remediate remotely
+
+
+
+
+//////////REMEDIATION STEPS -- MUST BE DONE IN THIS ORDER
+
+
+// STEP 1 -- REMOVE THE r77 ROOTKIT FIRST
+/////  Without removing the rootkit first, all $77-prefixed files are invisible and cannot be renamed
+/////  Use GMER or Malwarebytes Anti-Rootkit to detect the hidden kernel driver
+/////  Locate the rootkit service: reg query HKLM\SYSTEM\CurrentControlSet\Services | findstr $77
+/////  Stop the service: sc.exe stop <$77servicename>
+/////  Run Uninstall.exe if available, or manually delete the service registry key and driver binary
+/////  Remove the Defender exclusion: Remove-MpPreference -ExclusionPath "%SystemRoot%\Temp\$77stage"
+/////  Remove registry key: HKLM\SOFTWARE\$77config
+
+
+// STEP 2 -- RENAME $77 FILES BACK
+/////  Active Directory database (typically C:\Windows\NTDS\):
+/////       Rename $77ntds.dit to ntds.dit
+/////       Rename $77edb.log to edb.log
+/////       Rename $77edb.chk to edb.chk
+/////  DNS zone files (C:\Windows\System32\dns\):
+/////       For each $77<zonename>.dns file, rename it back to <zonename>.dns
+/////       Command: Get-ChildItem "C:\Windows\System32\dns\$77*" | Rename-Item -NewName { $_.Name -replace '^\$77','' }
+/////  Use: dir /a C:\Windows\NTDS\$77* and dir /a C:\Windows\System32\dns\$77* to locate them
+
+
+// STEP 3 -- REMOVE PERSISTENCE
+/////  Delete all six scheduled tasks:
+/////       Unregister-ScheduledTask -TaskName "PerfTrack-StandardCollector" -TaskPath "\Microsoft\Windows\PerfTrack\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "StorOptimizer" -TaskPath "\Microsoft\Windows\Defrag\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "NetworkDiagLogger" -TaskPath "\Microsoft\Windows\NetTrace\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "UsoCore-ServiceHandler" -TaskPath "\Microsoft\Windows\USOPrivate\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "SilentCleanup2" -TaskPath "\Microsoft\Windows\DiskCleanup\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "RegIdleBackup2" -TaskPath "\Microsoft\Windows\Registry\" -Confirm:$false
+/////  Delete the watchdog Run key:
+/////       Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "WinTaskWatchdog"
+/////  Delete the watchdog script from C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache\
+/////  Delete implant binaries from both drop directories
+
+
+// STEP 4 -- FIX ACTIVE DIRECTORY
+/////  Restart the NTDS service now that ntds.dit has been renamed back:
+/////       sc.exe start NTDS
+/////       sc.exe start kdc
+/////       sc.exe start Netlogon
+/////  Fix Kerberos policy via Group Policy Management Console (GPMC):
+/////       Default Domain Policy --> Computer Configuration --> Windows Settings --> Security Settings --> Account Policies --> Kerberos Policy
+/////       Restore: MaxTicketAge=10hrs, MaxRenewAge=7days, MaxClockSkew=5min
+/////       Run: gpupdate /force
+/////  Fix account lockout policy:
+/////       Set LockoutThreshold=5 (or per your policy), LockoutDuration=30min, LockoutObservationWindow=30min
+/////  Manually unlock all locked service accounts:
+/////       Get-ADUser -Filter {LockedOut -eq $true} | Unlock-ADAccount
+/////       Pay special attention to accounts matching *svc*, *dns*, *sql*, *iis*, *mssql*, *http*
+/////  Restore SYSVOL and NETLOGON ACLs:
+/////       icacls "C:\Windows\SYSVOL\sysvol\<domain>" /grant "Authenticated Users:(OI)(CI)(RX)" /T
+/////       icacls "C:\Windows\SYSVOL\sysvol\<domain>\Policies" /grant "Authenticated Users:(OI)(CI)(RX)" /T
+/////       icacls "C:\Windows\SYSVOL\sysvol\<domain>\scripts" /grant "Authenticated Users:(OI)(CI)(RX)" /T
+/////  Re-enable machine password changes:
+/////       Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters" -Name DisablePasswordChange
+/////  Force Group Policy refresh on all clients after SYSVOL is restored
+
+
+// STEP 5 -- FIX DNS
+/////  Restore the DNS service binary path:
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\DNS" -Name ImagePath -Value "%SystemRoot%\System32\dns.exe"
+/////  Remove the icacls deny on the dns directory:
+/////       icacls "C:\Windows\System32\dns" /remove:d Everyone /T
+/////  Re-enable the DNS service:
+/////       sc.exe config DNS start= auto
+/////       sc.exe start DNS
+/////  Remove the blackhole conditional forwarders:
+/////       Get-DnsServerZone | Where-Object ZoneType -eq Forwarder | Remove-DnsServerZone -Force
+/////  Restore primary zones from backup (backup should exist from start of round)
+/////  Reset the DNS listen address:
+/////       Set-DnsServerSetting -ListeningIPAddress @() -- clears forced listen IPs, listens on all
+/////  Restore root hints from the backup copy:
+/////       Copy C:\Windows\System32\dns\CACHE.DNS.bak to C:\Windows\System32\dns\CACHE.DNS
+/////  Re-enable recursion:
+/////       Set-DnsServerRecursion -Enable $true
+/////  Restore default TTL and scavenging:
+/////       Set-DnsServerScavenging -ScavengingInterval 7.00:00:00 -ApplyOnAllZones
+/////       For each zone: Set-DnsServerZoneAging -ZoneName <zone> -Aging $false
+/////  Restore DNS management console access:
+/////       icacls "%SystemRoot%\System32\dnsmgmt.msc" /remove:d Everyone
+/////  Restore DNS service registry key access:
+/////       In regedit, take ownership of HKLM\SYSTEM\CurrentControlSet\Services\DNS
+/////       Remove any Deny ACEs on BUILTIN\Users
+
+
+// STEP 6 -- RESTORE REMOTE CONNECTIVITY
+/////  WinRM:
+/////       Restore service binary: sc.exe config WinRM binPath= "%SystemRoot%\system32\svchost.exe -k NetworkService"
+/////       Restore service account: sc.exe config WinRM obj= "NT AUTHORITY\NetworkService"
+/////       sc.exe start WinRM
+/////       winrm quickconfig -force
+/////  SMB:
+/////       Set-SmbServerConfiguration -EnableSMB2Protocol $true -Force
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name SMB2 -Value 1
+/////       Restore LmCompatibilityLevel: Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\Lsa -Name LmCompatibilityLevel -Value 3
+/////       Restore service account and binary: sc.exe config LanmanServer obj= "LocalSystem"
+/////       sc.exe start LanmanServer
+/////  RDP:
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name PortNumber -Value 3389
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+/////       Remove the fake dependency from HKLM\SYSTEM\CurrentControlSet\Services\TermService\DependOnService
+/////       Remove icacls deny on termsrv.dll: icacls "%SystemRoot%\System32\termsrv.dll" /remove:d Everyone
+/////       sc.exe start TermService
+/////  ICMP and MTU:
+/////       Remove IPSec policy: netsh ipsec static set policy name=CCDC_ICMPKill assign=no
+/////            Then: netsh ipsec static delete policy name=CCDC_ICMPKill
+/////       Restore MTU on each NIC: netsh interface ipv4 set subinterface "<NIC name>" mtu=1500 store=persistent
+
+
+
+
+//////////FUTURE PREVENTION -- LESSONS LEARNED
+
+
+// Back up ntds.dit and DNS zones at the START of every competition round
+/////  If ntds.dit is hidden or corrupted and you have no backup, you cannot recover without a full DC rebuild
+/////  Command: ntdsutil "activate instance ntds" "ifm" "create full C:\ADBackup" quit quit
+
+// Monitor scheduled tasks against a baseline
+/////  Run: Get-ScheduledTask | Export-Clixml tasks_baseline.xml at the start of each round
+/////  Any task not in that baseline is suspicious -- check task folder, action, and trigger
+
+// Place service accounts in the Protected Users security group
+/////  Members of Protected Users cannot use NTLM, credential caching, or DES/RC4 Kerberos
+/////  They also cannot be used for Kerberos delegation
+/////  This does not prevent lockout but makes the accounts far harder to weaponize for lateral movement
+
+// Enforce a meaningful lockout threshold with auto-unlock
+/////  Threshold of 1 is never appropriate -- use 5 to 10 with a 30-minute auto-unlock duration
+/////  Monitor Event ID 4740 (account locked out) for sudden spikes
+
+// Monitor SYSVOL ACLs with a script at the start of each round
+/////  If Authenticated Users is missing from SYSVOL, Group Policy is silently broken
+/////  Command: (Get-Acl "C:\Windows\SYSVOL\sysvol").Access | Where IdentityReference -like "*Authenticated*"
+
+// Back up DNS zones to a secondary DNS server or offline file
+/////  A secondary DNS zone on another host survives primary zone deletion
+/////  Zone file backups in C:\Windows\System32\dns\ can also be restored manually
+
+// Know that DNS up does not mean DNS working
+/////  Always validate with: Resolve-DnsName <competition-domain> -Server 127.0.0.1
+/////  If the answer is SERVFAIL or times out -- DNS is broken even if the service shows Running
+
+// Restore NTDS before trying to fix anything else
+/////  Without a working domain controller, password resets, GPO changes, and account unlocks all fail
+/////  Get AD DS back online first -- everything else depends on it

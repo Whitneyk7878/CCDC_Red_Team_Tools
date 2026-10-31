@@ -1,0 +1,315 @@
+//////////MSSQL SERVER -- RED TEAM DEBRIEF
+//////////CCDC Competition Debrief -- Read to Blue Team
+
+
+
+
+//////////SCRIPTS EXECUTED ON THIS HOST
+
+// 1. CCDC_Windows_P3_Defender_BreakingBad.ps1
+// 2. CCDC_Windows_P3_Rootkit_r77Shadow.ps1
+// 3. CCDC_Windows_P3_Persist_MegaNukerOfDeath.ps1
+// 4. CCDC_Windows_P3_CreateGhostAdmins.ps1
+// 5. CCDC_Windows_P3_ServiceDestroyer.ps1
+// 6. CCDC_Windows_P3_Rootkit_r77HideServices.ps1
+
+
+
+
+//////////WHAT HAPPENED -- PHASE BY PHASE
+
+
+// PHASE 1 -- WINDOWS DEFENDER WAS PERMANENTLY BROKEN
+/////  Tamper Protection was bypassed by running a one-shot scheduled task as NT AUTHORITY\SYSTEM
+/////  This allowed all subsequent changes to Defender without triggering Security Center alerts
+/////  WinDefend, WdNisSvc, WdFilter, and SecurityHealthService were all stopped
+/////  The WMI Security Center namespace was wiped -- AntiVirusProduct registration deleted
+/////  Defender MOF auto-recovery files were overwritten with null bytes
+/////       This means winmgmt /resetrepository cannot re-register Defender
+/////  Defender signature store directories were deleted and ACL-locked against the Defender service account
+/////       Defender could start but had no signatures and could not update them
+/////  Windows catalog trust database (catroot2) was corrupted
+/////       This breaks sfc /scannow and DISM /RestoreHealth repair paths for Defender
+/////  On Server OS -- Defender was uninstalled as a Windows Feature entirely
+/////  Defender scheduled tasks were unregistered and the task folder was ACL-locked against Administrators
+/////       Defender cannot be re-scheduled even if re-installed
+/////  Registry policy keys were planted: DisableAntiSpyware=1, DisableRealtimeMonitoring=1, DisableAntiVirus=1
+/////       Those policy keys were then ACL-locked so Administrators cannot delete them without taking ownership first
+/////  Defender binaries were renamed with a $77 prefix (MpCmdRun.exe, MsMpEng.exe, MpDefenderCoreService.exe, MpSigStub.exe)
+/////       These binaries appear missing to all standard tools once the rootkit is running
+/////  Windows Firewall was set to ENABLED in the UI -- but DefaultInboundAction and DefaultOutboundAction were set to ALLOW
+/////       The firewall appears active in every management tool but blocks nothing
+/////  Three fake defensive firewall rules were planted with names like "Block Unauthorized Inbound"
+/////       All three rules actually ALLOW traffic -- they exist to deceive
+/////  The Windows Firewall management console (wf.msc) and Firewall settings DLL were renamed with $77 prefix
+/////       Blue team cannot open the Firewall GUI even if they know something is wrong
+
+
+// PHASE 2 -- r77 ROOTKIT INSTALLED
+/////  The r77 rootkit is a Ring-3 userspace rootkit that intercepts Win32 API calls on every running process
+/////  It was downloaded from the red team HTTP server and executed silently
+/////  A Defender exclusion was added for the staging directory before execution
+/////  Real-time monitoring was briefly disabled during the install
+/////  Once installed, any file, process, registry key, or service whose name starts with "$77" becomes completely invisible
+/////       This includes in Explorer, dir, Get-ChildItem, Task Manager, Process Explorer, Regedit, and sc.exe
+/////  The rootkit registers a kernel-mode driver service -- its own service name starts with $77 so it hides itself
+/////  Detection requires kernel-mode scanning tools such as GMER or Malwarebytes Anti-Rootkit
+
+
+// PHASE 3 -- PERSISTENCE PLANTED (MEGANUKEROFDEATH)
+/////  Six scheduled tasks were planted across legitimate-looking Windows task folders:
+/////       \Microsoft\Windows\PerfTrack\PerfTrack-StandardCollector
+/////       \Microsoft\Windows\Defrag\StorOptimizer
+/////       \Microsoft\Windows\NetTrace\NetworkDiagLogger
+/////       \Microsoft\Windows\USOPrivate\UsoCore-ServiceHandler
+/////       \Microsoft\Windows\DiskCleanup\SilentCleanup2
+/////       \Microsoft\Windows\Registry\RegIdleBackup2
+/////  All six run as SYSTEM at Highest privilege, trigger at startup AND every 5 minutes for 10 years
+/////  Implant binaries were copied to two hidden drop directories:
+/////       C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache\
+/////       C:\Windows\System32\spool\drivers\color\
+/////  A self-healing watchdog script was dropped to the cache directory
+/////  A registry Run key "WinTaskWatchdog" was planted at HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+/////       This watchdog runs at every boot and re-creates any of the six tasks that were deleted
+/////  IMPORTANT: Deleting the six tasks is NOT enough -- the Run key re-plants them on next boot
+
+
+// PHASE 4 -- 100 GHOST ADMIN ACCOUNTS CREATED
+/////  100 local Windows accounts were created with cryptographically random names: usr_<8 hex characters>
+/////  Example names: usr_3a9f21bc, usr_d07e5a44, usr_89cc102f
+/////  All 100 accounts were immediately added to BUILTIN\Administrators
+/////  All accounts have PasswordNeverExpires and AccountNeverExpires set
+/////  Passwords are 14-character complex strings -- uppercase, lowercase, digits, special chars
+/////  All credentials were written to a plain-text file: ghost_admins.txt in the script directory
+/////  These accounts give red team persistent local admin access even if service accounts are rotated
+/////  Standard enumeration will not flag them unless you audit the full local Administrators group
+
+
+// PHASE 5 -- SQL SERVER SABOTAGED (DEADINTHEWATER)
+/////  While SQL was still live, the following T-SQL was executed against the local instance:
+/////       ALTER DATABASE master SET RESTRICTED_USER -- only sa and db_owner can connect
+/////       ALTER DATABASE msdb SET OFFLINE -- SQL Agent cannot run
+/////       ALTER DATABASE model SET READ_ONLY -- no new databases can be created
+/////  TCP/IP protocol was disabled in the SQL Server network configuration registry key
+/////  The SQL Server listen port was changed from 1433 to 14334
+/////  SQL Browser service was stopped and disabled
+/////  Windows Firewall rules were created blocking TCP 1433 and TCP 14334 inbound and outbound:
+/////       Rule names: CCDC_Block_SQL_1433_In, CCDC_Block_SQL_1433_Out, CCDC_Block_SQL_14334_In, CCDC_Block_SQL_14334_Out
+/////  The MSSQLSERVER service account was changed to the non-existent user .\NonExistentUser2019
+/////  An invalid startup parameter was injected into the SQL Server Parameters registry key:
+/////       -eC:\NonExistent\Logs\sqlserver_error.log
+/////  MSSQLSERVER service was stopped
+/////  Result: SQL Server cannot start due to bad service account, invalid startup param, AND missing database files
+
+
+// PHASE 6 -- REMOTE CONNECTIVITY DESTROYED
+/////  WinRM:
+/////       All WinRM listener registry keys deleted
+/////       MaxEnvelopeSizekb set to 1 -- rejects all SOAP messages
+/////       All authentication methods disabled (Basic, Digest, Negotiate, Kerberos, Certificate)
+/////       Service account corrupted to .\NonExistentUser2019
+/////       Service binary path corrupted to C:\NonExistent\svchost.exe
+/////       WinRM stopped and disabled
+/////  SMB:
+/////       SMB1 and SMB2 disabled via policy and registry
+/////       All non-admin shares removed
+/////       Connection limits set to 1 -- strangling any remaining sessions
+/////       LmCompatibilityLevel set to 0 -- LM-only auth, rejected by all modern clients
+/////       Service account and binary path corrupted
+/////       LanmanServer stopped and disabled
+/////  RDP:
+/////       RDP port changed from 3389 to 33890
+/////       fDenyTSConnections set to 1 -- connections blocked at the protocol level
+/////       Service DLL path corrupted to C:\NonExistent\termsrv.dll
+/////       A mutually exclusive authentication paradox was set:
+/////            SecurityLayer=0 (legacy, no TLS) AND MinEncryptionLevel=4 (FIPS mandatory) AND NLA required
+/////       RDP certificate thumbprints deleted from the certificate store
+/////       A fake non-existent service dependency was added -- SCM refuses to start TermService
+/////       Session timeouts set to 1 millisecond
+/////       TermService stopped and disabled
+/////  ICMP and Network:
+/////       An IPSec policy named CCDC_ICMPKill was deployed via netsh -- blocks all ICMPv4
+/////       MTU was set to 68 bytes on all active NICs -- causes severe fragmentation on all traffic
+/////       TCP/IP stack registry values set to disable ICMP redirects and router discovery
+
+
+// PHASE 7 -- SQL DATABASE FILES HIDDEN WITH r77
+/////  The r77HideServices script renamed the SQL Server master database files with the $77 prefix:
+/////       master.mdf --> $77master.mdf
+/////       mastlog.ldf --> $77mastlog.ldf
+/////  While the rootkit is active these files are completely invisible to all standard tools
+/////  SQL Server cannot start without the master database -- this is the final lock on the service
+/////  The files are NOT deleted -- they exist on disk and are fully recoverable after rootkit removal
+
+
+
+
+//////////WHY THIS WAS EFFECTIVE
+
+
+// Defender was broken FIRST -- every subsequent script ran undetected and unblocked
+// The rootkit was installed SECOND -- all $77-prefixed artifacts became invisible immediately after
+// Persistence was planted while the system was clean -- the watchdog ensures it survives cleanup attempts
+// Ghost admins give fallback access that survives password resets and account audits on primary accounts
+// SQL was locked through three independent mechanisms -- bad service account, invalid startup param, AND hidden database files
+/////  Each layer alone would prevent startup
+/////  All three together mean the fix for one layer does not recover the service
+// Every remote management protocol (WinRM, SMB, RDP) was broken simultaneously
+// ICMP blocking and MTU=68 cause intermittent connectivity failures that are hard to distinguish from hardware issues
+// The phantom firewall is the most deceptive element -- it appears fully functional in every management tool
+
+
+
+
+//////////REMEDIATION STEPS -- MUST BE DONE IN THIS ORDER
+
+
+// STEP 1 -- REMOVE THE r77 ROOTKIT FIRST
+/////  Without removing the rootkit first, all $77-prefixed files are invisible and cannot be renamed
+/////  Use GMER or Malwarebytes Anti-Rootkit to detect the hidden kernel driver
+/////  Locate the rootkit service: reg query HKLM\SYSTEM\CurrentControlSet\Services | findstr $77
+/////  Stop the service: sc.exe stop <$77servicename>
+/////  Run Uninstall.exe if available, or manually delete the service registry key and driver binary
+/////  Remove the Defender exclusion: Remove-MpPreference -ExclusionPath "%SystemRoot%\Temp\$77stage"
+/////  Remove registry key: HKLM\SOFTWARE\$77config
+
+
+// STEP 2 -- RENAME $77 FILES BACK
+/////  SQL database files (in the SQL Server data directory, typically C:\Program Files\Microsoft SQL Server\...\DATA\):
+/////       Rename $77master.mdf to master.mdf
+/////       Rename $77mastlog.ldf to mastlog.ldf
+/////  Defender binaries (C:\Program Files\Windows Defender\):
+/////       Rename $77MpCmdRun.exe to MpCmdRun.exe
+/////       Rename $77MsMpEng.exe to MsMpEng.exe
+/////       Rename $77MpDefenderCoreService.exe to MpDefenderCoreService.exe
+/////  System32:
+/////       Rename $77MpSigStub.exe to MpSigStub.exe
+/////       Rename $77wf.msc to wf.msc
+/////       Rename $77FirewallControlPanel.dll to FirewallControlPanel.dll
+/////  Use: dir /a "C:\Program Files\Windows Defender\$77*" and dir /a C:\Windows\System32\$77* to locate them
+
+
+// STEP 3 -- REMOVE PERSISTENCE
+/////  Delete all six scheduled tasks:
+/////       Unregister-ScheduledTask -TaskName "PerfTrack-StandardCollector" -TaskPath "\Microsoft\Windows\PerfTrack\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "StorOptimizer" -TaskPath "\Microsoft\Windows\Defrag\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "NetworkDiagLogger" -TaskPath "\Microsoft\Windows\NetTrace\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "UsoCore-ServiceHandler" -TaskPath "\Microsoft\Windows\USOPrivate\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "SilentCleanup2" -TaskPath "\Microsoft\Windows\DiskCleanup\" -Confirm:$false
+/////       Unregister-ScheduledTask -TaskName "RegIdleBackup2" -TaskPath "\Microsoft\Windows\Registry\" -Confirm:$false
+/////  Delete the watchdog Run key:
+/////       Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "WinTaskWatchdog"
+/////  Delete the watchdog script from C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache\
+/////  Delete implant binaries from C:\ProgramData\Microsoft\Windows\WER\ReportQueue\cache\ and C:\Windows\System32\spool\drivers\color\
+
+
+// STEP 4 -- REMOVE GHOST ADMIN ACCOUNTS
+/////  Enumerate all accounts matching the pattern:
+/////       Get-LocalUser | Where-Object Name -match '^usr_[0-9a-f]{8}$'
+/////  Bulk remove:
+/////       Get-LocalUser | Where-Object Name -match '^usr_[0-9a-f]{8}$' | Remove-LocalUser
+/////  Also delete the credential log file ghost_admins.txt from the script directory if present
+/////  Assume any credentials in that file may have been exfiltrated
+
+
+// STEP 5 -- RESTORE WINDOWS DEFENDER
+/////  WMI: winmgmt /resetrepository  then  mofcomp.exe %SystemRoot%\System32\wbem\securitycenter.mof
+/////  Signature store: Take ownership of C:\ProgramData\Microsoft\Windows Defender\Definition Updates\
+/////       icacls "C:\ProgramData\Microsoft\Windows Defender\Definition Updates" /remove:d "NT SERVICE\WinDefend" /T
+/////       Update-MpSignature
+/////  Catalog: Stop CryptSvc, delete or rename catroot2, restart CryptSvc, then run sfc /scannow
+/////  Feature (Server): Install-WindowsFeature Windows-Defender -Source WIM:\\<media>\sources\install.wim:2
+/////  Task folder: takeown /F "%SystemRoot%\System32\Tasks\Microsoft\Windows\Windows Defender" /R /A
+/////       icacls "%SystemRoot%\System32\Tasks\Microsoft\Windows\Windows Defender" /remove:d Administrators /T
+/////  Registry: In regedit, take ownership of HKLM\SOFTWARE\Policies\Microsoft\Windows Defender
+/////       Delete DisableAntiSpyware, DisableRealtimeMonitoring, DisableBehaviorMonitoring, DisableAntiVirus values
+/////       Take ownership of HKLM\SOFTWARE\Microsoft\Windows Defender\Features
+/////       Set TamperProtection = 5 (re-enable Tamper Protection)
+/////  Phantom firewall: Take ownership of HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall
+/////       Delete DefaultInboundAction and DefaultOutboundAction values from each profile subkey
+/////       Remove the three fake rules:
+/////            Remove-NetFirewallRule -DisplayName "Block Unauthorized Inbound"
+/////            Remove-NetFirewallRule -DisplayName "Defender-Protected Inbound Policy"
+/////            Remove-NetFirewallRule -DisplayName "Emergency Lockdown All Unauthorized"
+/////       Run: netsh advfirewall reset
+
+
+// STEP 6 -- FIX SQL SERVER
+/////  Fix the service account (use SQL Server Configuration Manager or registry):
+/////       Change MSSQLSERVER service account back to NT SERVICE\MSSQLSERVER or the correct domain account
+/////  Remove the invalid startup parameter:
+/////       In SQL Server Configuration Manager, go to Startup Parameters and remove the invalid -e entry
+/////       Or in registry: HKLM\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL<ver>.MSSQLSERVER\MSSQLServer\Parameters
+/////            Delete the SQLArg value containing C:\NonExistent\Logs\
+/////  Start MSSQLSERVER in minimal configuration mode: sqlservr.exe -m
+/////  Fix master database restrictions:
+/////       ALTER DATABASE master SET MULTI_USER WITH ROLLBACK IMMEDIATE
+/////       ALTER DATABASE msdb SET ONLINE WITH ROLLBACK IMMEDIATE
+/////       ALTER DATABASE model SET READ_WRITE WITH ROLLBACK IMMEDIATE
+/////  Re-enable TCP/IP: In SQL Server Configuration Manager, Protocols for MSSQLSERVER, enable TCP/IP
+/////  Restore listen port: Change IPAll TCP Port back to 1433 in the TCP/IP properties
+/////  Re-enable SQL Browser: sc.exe config SQLBrowser start= auto  then  sc.exe start SQLBrowser
+/////  Remove the blocking firewall rules:
+/////       Remove-NetFirewallRule -DisplayName "CCDC_Block_SQL_1433_In"
+/////       Remove-NetFirewallRule -DisplayName "CCDC_Block_SQL_1433_Out"
+/////       Remove-NetFirewallRule -DisplayName "CCDC_Block_SQL_14334_In"
+/////       Remove-NetFirewallRule -DisplayName "CCDC_Block_SQL_14334_Out"
+
+
+// STEP 7 -- RESTORE REMOTE CONNECTIVITY
+/////  WinRM:
+/////       Restore service binary: sc.exe config WinRM binPath= "%SystemRoot%\system32\svchost.exe -k NetworkService"
+/////       Restore service account: sc.exe config WinRM obj= "NT AUTHORITY\NetworkService"
+/////       sc.exe start WinRM
+/////       winrm quickconfig -force
+/////  SMB:
+/////       Set-SmbServerConfiguration -EnableSMB2Protocol $true -Force
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name SMB2 -Value 1
+/////       Restore LmCompatibilityLevel: Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\Lsa -Name LmCompatibilityLevel -Value 3
+/////       Restore service account and binary: sc.exe config LanmanServer obj= "LocalSystem"
+/////       sc.exe start LanmanServer
+/////  RDP:
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name PortNumber -Value 3389
+/////       Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+/////       Restore TermService DLL: sc.exe config TermService binPath= "%SystemRoot%\System32\svchost.exe -k NetworkService"
+/////       Remove the fake dependency: edit HKLM\SYSTEM\CurrentControlSet\Services\TermService\DependOnService and remove NonExistentCorruptDep2019
+/////       Remove icacls deny on termsrv.dll: icacls "%SystemRoot%\System32\termsrv.dll" /remove:d Everyone
+/////       Restore auth settings: SecurityLayer=1, MinEncryptionLevel=2, UserAuthenticationRequired=0 (or per policy)
+/////       sc.exe start TermService
+/////  ICMP and MTU:
+/////       Remove IPSec policy: netsh ipsec static set policy name=CCDC_ICMPKill assign=no
+/////            Then: netsh ipsec static delete policy name=CCDC_ICMPKill
+/////       Restore MTU on each NIC: netsh interface ipv4 set subinterface "<NIC name>" mtu=1500 store=persistent
+/////       Restore TCPIP registry values under HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters:
+/////            EnableICMPRedirect=1, PerformRouterDiscovery=1, DeadGWDetectDefault=1, DisableIPSourceRouting=1
+
+
+
+
+//////////FUTURE PREVENTION -- LESSONS LEARNED
+
+
+// Baseline your scheduled tasks at the start of the competition
+/////  Run: Get-ScheduledTask | Export-Clixml tasks_baseline.xml
+/////  Any task not in that baseline is suspicious
+
+// Enable Defender Tamper Protection via Microsoft Intune or Group Policy
+/////  Tamper Protection when enforced via MDM cannot be disabled even from a SYSTEM token
+/////  This is the single highest-value defensive configuration for this host
+
+// Monitor the local Administrators group for unexpected members
+/////  Any account matching usr_[0-9a-f]{8} is a ghost admin -- remove immediately
+/////  Use Event ID 4732 (member added to Administrators) to alert on this
+
+// Protect the SQL service account
+/////  Use a Group Managed Service Account (gMSA) -- its password is managed by AD and cannot be changed by a local admin
+
+// Restrict who can modify SQL Server startup parameters
+/////  Only Domain Admins should have write access to the SQL Parameters registry key
+
+// Keep an offline copy of your SQL Server master database backup
+/////  BACKUP DATABASE master TO DISK = 'C:\Backups\master.bak' at the start of every competition round
+
+// Know that the firewall can lie
+/////  Always validate: Get-NetFirewallProfile | Select Name, DefaultInboundAction
+/////  If DefaultInboundAction is "Allow" on any profile -- the firewall is not actually blocking anything
